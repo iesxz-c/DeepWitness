@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from agents.llm_client import call_llm_with_tools
 
 REAL_KEYS = {}
-for k in ["GEMINI_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY", "AINATIVE_API_KEY"]:
+for k in ["GEMINI_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY"]:
     REAL_KEYS[k] = os.environ.get(k, "")
 
 BAD_KEY = "bad-key-for-testing-0000000000"
@@ -69,8 +69,6 @@ actual = run_scenario(
 results.append(("1. Gemini invalid", "openrouter/free", actual, actual == "openrouter/free"))
 
 # Scenario 2: Gemini + OpenRouter invalid -> groq
-# NOTE: OpenRouter free/paid share OPENROUTER_API_KEY, so invalidating it
-# kills both tier 2 (openrouter/free) AND tier 5 (openrouter/paid).
 actual = run_scenario(
     "Scenario 2: Gemini + OpenRouter invalid",
     invalid_keys=["GEMINI_API_KEY", "OPENROUTER_API_KEY"],
@@ -78,46 +76,34 @@ actual = run_scenario(
 )
 results.append(("2. Gemini+OpenRouter invalid", "groq", actual, actual == "groq"))
 
-# Scenario 3: Gemini + OpenRouter + Groq invalid -> ainative
-actual = run_scenario(
-    "Scenario 3: Gemini+OpenRouter+Groq invalid",
-    invalid_keys=["GEMINI_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY"],
-    expected_provider="ainative",
-)
-# ainative key may or may not be valid
-ainative_ok = actual == "ainative"
-results.append(("3. Gemini+OpenRouter+Groq invalid", "ainative", actual, ainative_ok))
-
-# Scenario 4: ainative invalid -> openrouter/paid
-# WARNING: openrouter/free and openrouter/paid share OPENROUTER_API_KEY.
-# With a valid OpenRouter key, tier 2 (openrouter/free) always succeeds
-# before tier 5 (openrouter/paid) is reached.
-# Reaching tier 5 independently is structurally impossible with a shared key.
-print("\n--- Scenario 4: ainative invalid (OpenRouter valid) ---")
+# Scenario 3: Gemini + OpenRouter + Groq invalid -> openrouter/paid
+# NOTE: openrouter/free and openrouter/paid share OPENROUTER_API_KEY,
+# so invalidating it kills both tier 2 (openrouter/free) AND tier 4 (openrouter/paid).
+# This means the chain has no viable providers -> RuntimeError.
+print("\n--- Scenario 3: Gemini+OpenRouter+Groq invalid ---")
 print("  WARNING: openrouter/free and openrouter/paid share OPENROUTER_API_KEY.")
-print("  Tier 2 always succeeds before tier 5 is reached.")
-print("  This scenario CANNOT independently reach openrouter/paid.")
+print("  Invalidating OpenRouter kills both tiers -> all 4 tiers fail.")
 _restore()
-_set("AINATIVE_API_KEY", BAD_KEY)
+for k in ["GEMINI_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY"]:
+    _set(k, BAD_KEY)
 try:
-    result = call_llm_with_tools(
+    call_llm_with_tools(
         question=QUESTION,
         system_prompt=SYSTEM_PROMPT,
         tool_defs=TOOLS,
         tool_executor=dummy_executor,
-        verbose=False,
+        verbose=True,
     )
-    actual = result["provider_used"]
-    print(f"  >> Actual: {actual} (tier 2 absorbed before tier 5)")
-    _restore()
-    results.append(("4. ainative invalid", "openrouter/paid (impossible)", actual, actual == "openrouter/free"))
+    results.append(("3. Gemini+OpenRouter+Groq invalid", "RuntimeError", None, False))
+except RuntimeError:
+    results.append(("3. Gemini+OpenRouter+Groq invalid", "RuntimeError", "RuntimeError", True))
 except Exception as e:
-    print(f"  >> Unexpected error: {e}")
+    results.append(("3. Gemini+OpenRouter+Groq invalid", "RuntimeError", type(e).__name__, False))
+finally:
     _restore()
-    results.append(("4. ainative invalid", "openrouter/paid (impossible)", None, False))
 
-# Scenario 5: ALL keys invalid -> clean error
-print("\n--- Scenario 5: ALL keys invalid ---")
+# Scenario 4: ALL keys invalid -> clean error
+print("\n--- Scenario 4: ALL keys invalid ---")
 _restore()
 for k in REAL_KEYS:
     _set(k, BAD_KEY)
@@ -127,16 +113,13 @@ try:
         system_prompt=SYSTEM_PROMPT,
         tool_defs=TOOLS,
         tool_executor=dummy_executor,
-        verbose=False,
+        verbose=True,
     )
-    print("  >> FAIL: should have raised RuntimeError")
-    results.append(("5. ALL invalid", "RuntimeError", None, False))
-except RuntimeError as e:
-    print(f"  >> Clean RuntimeError: {e}")
-    results.append(("5. ALL invalid", "RuntimeError", "RuntimeError", True))
+    results.append(("4. ALL invalid", "RuntimeError", None, False))
+except RuntimeError:
+    results.append(("4. ALL invalid", "RuntimeError", "RuntimeError", True))
 except Exception as e:
-    print(f"  >> FAIL: raw {type(e).__name__}: {e}")
-    results.append(("5. ALL invalid", "RuntimeError", type(e).__name__, False))
+    results.append(("4. ALL invalid", "RuntimeError", type(e).__name__, False))
 finally:
     _restore()
 

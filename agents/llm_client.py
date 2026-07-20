@@ -21,7 +21,6 @@ GEMINI_MODEL = "gemini-2.5-flash"
 OPENROUTER_FREE_MODEL = "openrouter/free"
 OPENROUTER_PAID_MODEL = "openai/gpt-4o-mini"
 GROQ_MODEL = "llama-3.3-70b-versatile"
-AINATIVE_MODEL = "gpt-4o-mini"
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_HEADERS = {
@@ -189,7 +188,21 @@ def _openai_compatible_loop(
         if not msg.tool_calls:
             return msg.content or "", tools_called
 
-        messages.append(msg.model_dump())
+        assistant_msg = {
+            "role": "assistant",
+            "content": msg.content,
+            "tool_calls": [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                }
+                for tc in (msg.tool_calls or [])
+            ]
+            if msg.tool_calls
+            else None,
+        }
+        messages.append(assistant_msg)
 
         for tc in msg.tool_calls:
             name = tc.function.name
@@ -246,23 +259,6 @@ def _try_groq(question, system_prompt, tool_defs, tool_executor, verbose):
     )
 
 
-def _try_ainative(question, system_prompt, tool_defs, tool_executor, verbose):
-    key = os.environ.get("AINATIVE_API_KEY")
-    if not key:
-        raise RuntimeError("AINATIVE_API_KEY not set")
-    return _openai_compatible_loop(
-        provider_tag="ainative",
-        base_url="https://api.ainative.studio/v1",
-        api_key=key,
-        model=AINATIVE_MODEL,
-        question=question,
-        system_prompt=system_prompt,
-        tool_defs=tool_defs,
-        tool_executor=tool_executor,
-        verbose=verbose,
-    )
-
-
 def _try_openrouter_paid(question, system_prompt, tool_defs, tool_executor, verbose):
     key = os.environ.get("OPENROUTER_API_KEY")
     if not key:
@@ -285,7 +281,6 @@ FALLBACK_CHAIN = [
     ("gemini", _try_gemini),
     ("openrouter/free", _try_openrouter_free),
     ("groq", _try_groq),
-    ("ainative", _try_ainative),
     ("openrouter/paid", _try_openrouter_paid),
 ]
 
