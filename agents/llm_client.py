@@ -375,7 +375,7 @@ if __name__ == "__main__":
         print(f"  tools_called: {result2['tools_called']}")
         print(f"  answer: {result2['answer'][:200]}")
     except RuntimeError as e:
-        print(f"  All 5 tiers failed: {e}")
+        print(f"  All 4 tiers failed: {e}")
     finally:
         if saved_gemini:
             os.environ["GEMINI_API_KEY"] = saved_gemini
