@@ -1,11 +1,8 @@
 import json
 import os
 import tempfile
-import time
 from pathlib import Path
 from typing import Any
-
-import google.generativeai as genai
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -13,6 +10,7 @@ from schemas.event import Event
 from agents.store import EventStore, VectorIndex
 from agents.timeline_agent import TimelineEntry, build_timeline
 from agents.evidence_agent import EvidenceBundle, get_evidence
+from agents.llm_client import call_llm_with_tools
 
 SYSTEM_PROMPT = """\
 You are an AI investigator assistant for a CCTV surveillance system.
@@ -20,51 +18,44 @@ You have access to tools for searching events, building timelines, and retrievin
 Use the tools to answer the user's question. You may call multiple tools in sequence.
 Always provide a clear, concise final answer based on the tool results."""
 
-TOOL_DECLARATIONS = [
-    genai.protos.FunctionDeclaration(
-        name="search_events",
-        description="Semantic search across all events by natural language query. Returns the most relevant events.",
-        parameters=genai.protos.Schema(
-            type=genai.protos.Type.OBJECT,
-            properties={
-                "query": genai.protos.Schema(type=genai.protos.Type.STRING, description="Natural language search query"),
-                "k": genai.protos.Schema(type=genai.protos.Type.INTEGER, description="Number of results to return"),
+TOOL_DEFS = [
+    {
+        "name": "search_events",
+        "description": "Semantic search across all events by natural language query. Returns the most relevant events.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Natural language search query"},
+                "k": {"type": "integer", "description": "Number of results to return"},
             },
-            required=["query"],
-        ),
-    ),
-    genai.protos.FunctionDeclaration(
-        name="get_timeline",
-        description="Build a chronological timeline of events within a time range, merging duplicates across cameras.",
-        parameters=genai.protos.Schema(
-            type=genai.protos.Type.OBJECT,
-            properties={
-                "start_time": genai.protos.Schema(type=genai.protos.Type.STRING, description="Start time in HH:MM:SS format"),
-                "end_time": genai.protos.Schema(type=genai.protos.Type.STRING, description="End time in HH:MM:SS format"),
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "get_timeline",
+        "description": "Build a chronological timeline of events within a time range, merging duplicates across cameras.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "start_time": {"type": "string", "description": "Start time in HH:MM:SS format"},
+                "end_time": {"type": "string", "description": "End time in HH:MM:SS format"},
             },
-            required=["start_time", "end_time"],
-        ),
-    ),
-    genai.protos.FunctionDeclaration(
-        name="get_evidence",
-        description="Look up video frame evidence for a specific camera and time.",
-        parameters=genai.protos.Schema(
-            type=genai.protos.Type.OBJECT,
-            properties={
-                "camera": genai.protos.Schema(type=genai.protos.Type.STRING, description="Camera name"),
-                "time": genai.protos.Schema(type=genai.protos.Type.STRING, description="Time in HH:MM:SS format"),
+            "required": ["start_time", "end_time"],
+        },
+    },
+    {
+        "name": "get_evidence",
+        "description": "Look up video frame evidence for a specific camera and time.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "camera": {"type": "string", "description": "Camera name"},
+                "time": {"type": "string", "description": "Time in HH:MM:SS format"},
             },
-            required=["camera", "time"],
-        ),
-    ),
+            "required": ["camera", "time"],
+        },
+    },
 ]
-
-GEMINI_TOOLS = [genai.protos.Tool(function_declarations=TOOL_DECLARATIONS)]
-
-
-RATE_LIMIT_DELAY = 13  # seconds between API calls (free tier = 5 RPM)
-MAX_RETRIES = 5
-INITIAL_BACKOFF = 15  # seconds
 
 
 class InvestigatorAgent:
@@ -79,31 +70,8 @@ class InvestigatorAgent:
         self.event_store = event_store
         self.frame_cache_dir = Path(frame_cache_dir)
         self.verbose = verbose
-        self.model = genai.GenerativeModel(
-            model_name="gemini-2.5-flash",
-            system_instruction=SYSTEM_PROMPT,
-            tools=GEMINI_TOOLS,
-        )
         self.tool_log: list[dict[str, Any]] = []
-
-    def _wait(self, label: str = "API call"):
-        if self.verbose:
-            print(f"  waiting {RATE_LIMIT_DELAY}s before next {label}...")
-        time.sleep(RATE_LIMIT_DELAY)
-
-    def _api_call(self, chat, content):
-        backoff = INITIAL_BACKOFF
-        for attempt in range(1, MAX_RETRIES + 1):
-            self._wait("API call")
-            try:
-                return chat.send_message(content)
-            except Exception as e:
-                if "429" in str(e) and attempt < MAX_RETRIES:
-                    print(f"  [retry {attempt}/{MAX_RETRIES}] 429 rate limit, backing off {backoff}s...")
-                    time.sleep(backoff)
-                    backoff = min(backoff * 2, 120)
-                else:
-                    raise
+        self.provider_used: str | None = None
 
     def _execute_tool(self, name: str, args: dict[str, Any]) -> str:
         self.tool_log.append({"tool": name, "args": args})
@@ -141,47 +109,20 @@ class InvestigatorAgent:
 
         return json.dumps({"error": f"unknown tool: {name}"})
 
-    def ask(self, question: str) -> str:
+    def ask(self, question: str) -> dict[str, Any]:
         self.tool_log = []
-        chat = self.model.start_chat(history=[])
-        response = self._api_call(chat, question)
-
-        while True:
-            function_calls = [
-                part.function_call
-                for part in response.candidates[0].content.parts
-                if hasattr(part, "function_call") and part.function_call
-            ]
-
-            if not function_calls:
-                text_parts = [
-                    part.text
-                    for part in response.candidates[0].content.parts
-                    if hasattr(part, "text") and part.text
-                ]
-                return "\n".join(text_parts)
-
-            function_responses = []
-            for fc in function_calls:
-                name = fc.name
-                args = dict(fc.args)
-                print(f"  [tool] {name}({json.dumps(args)})")
-                result = self._execute_tool(name, args)
-                function_responses.append(
-                    genai.protos.Part(
-                        function_response=genai.protos.FunctionResponse(
-                            name=name,
-                            response={"result": result},
-                        )
-                    )
-                )
-
-            response = self._api_call(chat, function_responses)
+        result = call_llm_with_tools(
+            question=question,
+            system_prompt=SYSTEM_PROMPT,
+            tool_defs=TOOL_DEFS,
+            tool_executor=self._execute_tool,
+            verbose=self.verbose,
+        )
+        self.provider_used = result["provider_used"]
+        return result
 
 
 if __name__ == "__main__":
-    genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-
     fake_events = [
         Event(time="08:15:00", camera="cam-entrance", event_type="intrusion",
               description="Person jumped over the perimeter fence near the east gate", confidence=0.92),
@@ -225,8 +166,9 @@ if __name__ == "__main__":
             print(f"Q: {q}")
             print(f"{'='*60}")
             agent.tool_log.clear()
-            answer = agent.ask(q)
-            print(f"\nTools called: {[t['tool'] for t in agent.tool_log]}")
-            print(f"Answer: {answer}")
+            result = agent.ask(q)
+            print(f"\nProvider: {result['provider_used']}")
+            print(f"Tools called: {result['tools_called']}")
+            print(f"Answer: {result['answer']}")
 
         store.close()

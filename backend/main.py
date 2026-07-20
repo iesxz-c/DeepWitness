@@ -103,10 +103,11 @@ class QueryRequest(BaseModel):
 @app.post("/query")
 def query(req: QueryRequest):
     state.agent.tool_log.clear()
-    answer = state.agent.ask(req.question)
+    result = state.agent.ask(req.question)
     return {
-        "answer": answer,
-        "tools_called": [t["tool"] for t in state.agent.tool_log],
+        "answer": result["answer"],
+        "tools_called": result["tools_called"],
+        "provider_used": result["provider_used"],
     }
 
 
@@ -115,8 +116,12 @@ def report():
     all_events = state.store.get_events()
     timeline_entries = build_timeline(all_events)
     evidence_bundles = [get_evidence(ev, Path(".")) for ev in all_events]
-    markdown, structured = generate_report(timeline_entries, evidence_bundles)
-    return {"markdown": markdown, "structured": structured}
+    markdown, structured, provider = generate_report(timeline_entries, evidence_bundles)
+    return {
+        "markdown": markdown,
+        "structured": structured,
+        "provider_used": provider,
+    }
 
 
 if __name__ == "__main__":

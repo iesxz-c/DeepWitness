@@ -2,18 +2,15 @@ import json
 import os
 import re
 import tempfile
-import time
 from pathlib import Path
 from typing import Any
-
-import google.generativeai as genai
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from schemas.event import Event
 from agents.timeline_agent import TimelineEntry
 from agents.evidence_agent import EvidenceBundle
-from agents.query_agent import RATE_LIMIT_DELAY, MAX_RETRIES, INITIAL_BACKOFF
+from agents.llm_client import call_llm_with_tools
 
 REPORT_PROMPT = """\
 You are an AI investigator generating a CCTV surveillance report.
@@ -49,28 +46,6 @@ After the markdown report, append a JSON object (fenced with ```json) with this 
 This JSON is for programmatic consumption — do not omit it."""
 
 
-def _wait(verbose: bool = False):
-    if verbose:
-        print(f"  waiting {RATE_LIMIT_DELAY}s before API call...")
-    time.sleep(RATE_LIMIT_DELAY)
-
-
-def _api_call_gen(model, prompt: str, verbose: bool = False) -> str:
-    backoff = INITIAL_BACKOFF
-    for attempt in range(1, MAX_RETRIES + 1):
-        _wait(verbose)
-        try:
-            response = model.generate_content(prompt)
-            return response.text
-        except Exception as e:
-            if "429" in str(e) and attempt < MAX_RETRIES:
-                print(f"  [retry {attempt}/{MAX_RETRIES}] 429, backing off {backoff}s...")
-                time.sleep(backoff)
-                backoff = min(backoff * 2, 120)
-            else:
-                raise
-
-
 def _parse_structured(raw: str) -> dict[str, Any]:
     match = re.search(r"```json\s*\n(.*?)\n```", raw, re.DOTALL)
     if match:
@@ -90,7 +65,7 @@ def generate_report(
     timeline: list[TimelineEntry],
     evidence: list[EvidenceBundle],
     verbose: bool = False,
-) -> tuple[str, dict[str, Any]]:
+) -> tuple[str, dict[str, Any], str]:
     timeline_data = [t.model_dump() for t in timeline]
     evidence_data = []
     for b in evidence:
@@ -112,16 +87,24 @@ def generate_report(
 
     prompt = REPORT_PROMPT + context + REPORT_FORMAT_INSTRUCTIONS
 
-    model = genai.GenerativeModel(model_name="gemini-2.5-flash")
-    raw_md = _api_call_gen(model, prompt, verbose=verbose)
+    def _noop_executor(name, args):
+        return json.dumps({"error": "report does not use tools"})
 
+    result = call_llm_with_tools(
+        question=prompt,
+        system_prompt="You are an AI report generator for CCTV investigations.",
+        tool_defs=[],
+        tool_executor=_noop_executor,
+        verbose=verbose,
+    )
+
+    raw_md = result["answer"]
+    provider = result["provider_used"]
     structured = _parse_structured(raw_md)
-    return raw_md, structured
+    return raw_md, structured, provider
 
 
 if __name__ == "__main__":
-    genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-
     fake_events = [
         Event(time="08:15:00", camera="cam-entrance", event_type="intrusion",
               description="Person jumped over the perimeter fence near the east gate", confidence=0.92),
@@ -147,8 +130,9 @@ if __name__ == "__main__":
         evidence = [get_evidence(ev, frame_dir) for ev in fake_events]
 
     print("=== Generating Report ===")
-    markdown, structured = generate_report(timeline, evidence, verbose=True)
+    markdown, structured, provider = generate_report(timeline, evidence, verbose=True)
 
+    print(f"\nProvider: {provider}")
     print("\n" + markdown)
 
     print("\n=== Structured Output ===")
