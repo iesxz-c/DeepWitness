@@ -38,7 +38,7 @@ WEAPON_MODEL_TAG = "weapon_v1"
 KNIFE_MODEL_TAG = "knife_v1"
 
 DEFAULT_SKIP = 5
-DEFAULT_CONFIDENCE = 0.25
+DEFAULT_CONFIDENCE = 0.5
 
 
 def _load_models():
