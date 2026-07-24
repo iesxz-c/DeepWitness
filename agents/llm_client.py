@@ -278,10 +278,10 @@ def _try_openrouter_paid(question, system_prompt, tool_defs, tool_executor, verb
 
 
 FALLBACK_CHAIN = [
-    ("gemini", _try_gemini),
     ("openrouter/free", _try_openrouter_free),
     ("groq", _try_groq),
     ("openrouter/paid", _try_openrouter_paid),
+    ("gemini", _try_gemini),
 ]
 
 
@@ -356,7 +356,8 @@ if __name__ == "__main__":
 
     prompt = "You are a CCTV investigator. Answer concisely."
 
-    print("=== Test 1: Gemini (should work) ===")
+    # --- Test 1: openrouter/free should be primary ---
+    print("=== Test 1: openrouter/free (primary, should work) ===")
     result = call_llm_with_tools(
         "What events are in the system?", prompt, tools, test_executor, verbose=True
     )
@@ -364,9 +365,13 @@ if __name__ == "__main__":
     print(f"  tools_called: {result['tools_called']}")
     print(f"  answer: {result['answer'][:200]}")
 
-    print("\n=== Test 2: Force Gemini failure -> full fallback chain ===")
-    saved_gemini = os.environ.pop("GEMINI_API_KEY", None)
-    os.environ["GEMINI_API_KEY"] = "bad-key-for-testing"
+    # --- Test 2: invalidate OpenRouter -> falls to Groq ---
+    # NOTE: openrouter/free and openrouter/paid share OPENROUTER_API_KEY.
+    # Invalidating it kills tier 1 (openrouter/free) AND tier 3 (openrouter/paid),
+    # so the chain skips both OpenRouter tiers and lands on Groq (tier 2).
+    print("\n=== Test 2: OpenRouter invalid -> falls to Groq ===")
+    saved_or = os.environ.pop("OPENROUTER_API_KEY", None)
+    os.environ["OPENROUTER_API_KEY"] = "bad-key-for-testing"
     try:
         result2 = call_llm_with_tools(
             "What events are in the system?", prompt, tools, test_executor, verbose=True
@@ -377,7 +382,31 @@ if __name__ == "__main__":
     except RuntimeError as e:
         print(f"  All 4 tiers failed: {e}")
     finally:
-        if saved_gemini:
-            os.environ["GEMINI_API_KEY"] = saved_gemini
+        if saved_or:
+            os.environ["OPENROUTER_API_KEY"] = saved_or
+
+    # --- Test 3: invalidate OpenRouter + Groq -> falls to Gemini (last resort) ---
+    # OpenRouter invalid kills tier 1 + tier 3 (shared key).
+    # Groq invalid kills tier 2.
+    # Only Gemini (tier 4) remains.
+    print("\n=== Test 3: OpenRouter+Groq invalid -> falls to Gemini (last resort) ===")
+    saved_or = os.environ.pop("OPENROUTER_API_KEY", None)
+    saved_groq = os.environ.pop("GROQ_API_KEY", None)
+    os.environ["OPENROUTER_API_KEY"] = "bad-key-for-testing"
+    os.environ["GROQ_API_KEY"] = "bad-key-for-testing"
+    try:
+        result3 = call_llm_with_tools(
+            "What events are in the system?", prompt, tools, test_executor, verbose=True
+        )
+        print(f"  provider: {result3['provider_used']}")
+        print(f"  tools_called: {result3['tools_called']}")
+        print(f"  answer: {result3['answer'][:200]}")
+    except RuntimeError as e:
+        print(f"  All 4 tiers failed: {e}")
+    finally:
+        if saved_or:
+            os.environ["OPENROUTER_API_KEY"] = saved_or
+        if saved_groq:
+            os.environ["GROQ_API_KEY"] = saved_groq
 
     store.close()
