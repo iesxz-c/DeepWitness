@@ -1,6 +1,10 @@
 """Test the 4-tier LLM fallback chain via call_llm_with_tools().
 
-Chain: gemini -> openrouter/free -> groq -> openrouter/paid
+Chain: openrouter/free -> groq -> openrouter/paid -> gemini
+
+NOTE: openrouter/free (tier 1) and openrouter/paid (tier 3) share
+OPENROUTER_API_KEY.  Invalidating that single key kills both tiers
+simultaneously.
 
 Scenarios invalidate real API keys with os.environ overrides and
 restore them in try/finally blocks after each scenario.
@@ -79,49 +83,44 @@ def run_scenario(name, invalid_keys, expected_provider, warn=None):
 
 results = []
 
-# Scenario 1: Gemini key invalid -> openrouter/free
-actual, passed = run_scenario(
-    name="Scenario 1: Gemini key invalid",
-    invalid_keys=["GEMINI_API_KEY"],
-    expected_provider="openrouter/free",
-)
-results.append(("1. Gemini invalid -> openrouter/free", "openrouter/free", actual, passed))
-
-# Scenario 2: Gemini + OpenRouter both invalid -> groq
+# Scenario 1: OpenRouter key invalid -> groq (tier 2)
 # NOTE: openrouter/free and openrouter/paid share OPENROUTER_API_KEY.
-# Invalidating it kills tier 2 (openrouter/free) AND tier 4 (openrouter/paid),
-# so only gemini and groq survive. Gemini is bad -> groq wins.
+# Invalidating it kills tier 1 (openrouter/free) AND tier 3 (openrouter/paid).
+# The chain skips both and lands on Groq (tier 2).
 actual, passed = run_scenario(
-    name="Scenario 2: Gemini + OpenRouter invalid",
-    invalid_keys=["GEMINI_API_KEY", "OPENROUTER_API_KEY"],
+    name="Scenario 1: OpenRouter key invalid",
+    invalid_keys=["OPENROUTER_API_KEY"],
     expected_provider="groq",
-)
-results.append(("2. Gemini+OpenRouter invalid -> groq", "groq", actual, passed))
-
-# Scenario 3: Gemini + OpenRouter + Groq all invalid -> openrouter/paid
-# UNREACHABLE: openrouter/free and openrouter/paid share a single key.
-# Scenario 2 already invalidated that key, killing both tier 2 and tier 4.
-# With groq also dead, all 4 tiers are non-functional -> RuntimeError.
-actual, passed = run_scenario(
-    name="Scenario 3: Gemini + OpenRouter + Groq invalid",
-    invalid_keys=["GEMINI_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY"],
-    expected_provider=None,
     warn=(
         "openrouter/free and openrouter/paid share OPENROUTER_API_KEY.\n"
-        "  Invalidating that key already killed both tier 2 and tier 4.\n"
-        "  This scenario (isolate tier 4 alone) is structurally impossible.\n"
-        "  Expected outcome: RuntimeError (all tiers dead)."
+        "  Invalidating it kills both tier 1 and tier 3.\n"
+        "  Chain should land on groq (tier 2)."
     ),
 )
-results.append(("3. Gemini+OR+Groq invalid -> RuntimeError", "RuntimeError", "RuntimeError" if actual is None else actual, passed))
+results.append(("1. OpenRouter invalid -> groq", "groq", actual, passed))
 
-# Scenario 4: ALL keys invalid -> clean RuntimeError, no raw traceback
+# Scenario 2: OpenRouter + Groq both invalid -> gemini (tier 4, last resort)
+# OpenRouter invalid kills tier 1 + tier 3 (shared key).
+# Groq invalid kills tier 2.
+# Only Gemini (tier 4) survives.
 actual, passed = run_scenario(
-    name="Scenario 4: ALL keys invalid",
+    name="Scenario 2: OpenRouter + Groq invalid",
+    invalid_keys=["OPENROUTER_API_KEY", "GROQ_API_KEY"],
+    expected_provider="gemini",
+    warn=(
+        "OpenRouter invalid kills tiers 1+3, Groq invalid kills tier 2.\n"
+        "  Only Gemini (tier 4, last resort) remains."
+    ),
+)
+results.append(("2. OR+Groq invalid -> gemini", "gemini", actual, passed))
+
+# Scenario 3: ALL keys invalid -> clean RuntimeError
+actual, passed = run_scenario(
+    name="Scenario 3: ALL keys invalid",
     invalid_keys=["GEMINI_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY"],
     expected_provider=None,
 )
-results.append(("4. ALL invalid -> RuntimeError", "RuntimeError", "RuntimeError" if actual is None else actual, passed))
+results.append(("3. ALL invalid -> RuntimeError", "RuntimeError", "RuntimeError" if actual is None else actual, passed))
 
 # Summary table
 print("\n" + "=" * 80)
