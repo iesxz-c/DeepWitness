@@ -1,5 +1,5 @@
-"""Test report_agent fallback: invalidate Gemini, confirm openrouter/free
-generates a valid report with all 4 sections and a structured dict."""
+"""Test report_agent fallback: invalidate OpenRouter (new tier 1), confirm
+Groq (tier 2) generates a valid report with all 4 sections and a structured dict."""
 
 import json
 import os
@@ -14,8 +14,8 @@ from agents.timeline_agent import build_timeline
 from agents.evidence_agent import get_evidence
 from agents.report_agent import generate_report
 
-REAL_GEMINI = os.environ.get("GEMINI_API_KEY", "")
-EXPECTED_PROVIDER = "openrouter/free"
+REAL_OPENROUTER = os.environ.get("OPENROUTER_API_KEY", "")
+EXPECTED_PROVIDER = "groq"
 REQUIRED_SECTIONS = ["## Summary", "## Timeline of Events", "## Evidence", "## Confidence Notes"]
 REQUIRED_STRUCT_KEYS = ["summary", "timeline", "evidence", "confidence_notes"]
 
@@ -32,14 +32,14 @@ events = [
 
 
 def _restore():
-    if REAL_GEMINI:
-        os.environ["GEMINI_API_KEY"] = REAL_GEMINI
+    if REAL_OPENROUTER:
+        os.environ["OPENROUTER_API_KEY"] = REAL_OPENROUTER
     else:
-        os.environ.pop("GEMINI_API_KEY", None)
+        os.environ.pop("OPENROUTER_API_KEY", None)
 
 
 try:
-    os.environ["GEMINI_API_KEY"] = "bad-key-for-testing-0000000000"
+    os.environ["OPENROUTER_API_KEY"] = "bad-key-for-testing-0000000000"
 
     timeline = build_timeline(events)
 
@@ -50,7 +50,7 @@ try:
             (frame_dir / name).write_bytes(b"\xff")
         evidence = [get_evidence(ev, frame_dir) for ev in events]
 
-    print(f"Gemini key: INVALIDATED")
+    print(f"OpenRouter key: INVALIDATED (forcing fallback to Groq)")
     print(f"Timeline entries: {len(timeline)}")
     print(f"Evidence bundles: {len(evidence)}")
     print("-" * 60)

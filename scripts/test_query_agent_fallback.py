@@ -1,5 +1,5 @@
-"""Test query_agent fallback: invalidate Gemini, confirm openrouter/free
-picks up and runs search_events -> get_evidence tool chain correctly."""
+"""Test query_agent fallback: invalidate OpenRouter (new tier 1), confirm
+Groq (tier 2) picks up and runs search_events -> get_evidence tool chain."""
 
 import json
 import os
@@ -13,9 +13,9 @@ from agents.store import EventStore, VectorIndex
 from agents.query_agent import InvestigatorAgent
 from schemas.event import Event
 
-REAL_GEMINI = os.environ.get("GEMINI_API_KEY", "")
+REAL_OPENROUTER = os.environ.get("OPENROUTER_API_KEY", "")
 QUESTION = "Find the intrusion event and retrieve the video frame evidence (thumbnails) for it."
-EXPECTED_PROVIDER = "openrouter/free"
+EXPECTED_PROVIDER = "groq"
 REQUIRED_TOOLS = ["search_events", "get_evidence"]
 
 events = [
@@ -38,14 +38,14 @@ events = [
 
 
 def _restore():
-    if REAL_GEMINI:
-        os.environ["GEMINI_API_KEY"] = REAL_GEMINI
+    if REAL_OPENROUTER:
+        os.environ["OPENROUTER_API_KEY"] = REAL_OPENROUTER
     else:
-        os.environ.pop("GEMINI_API_KEY", None)
+        os.environ.pop("OPENROUTER_API_KEY", None)
 
 
 try:
-    os.environ["GEMINI_API_KEY"] = "bad-key-for-testing-0000000000"
+    os.environ["OPENROUTER_API_KEY"] = "bad-key-for-testing-0000000000"
 
     with tempfile.TemporaryDirectory() as tmpdir:
         frame_dir = Path(tmpdir) / "frames"
@@ -66,7 +66,7 @@ try:
         agent = InvestigatorAgent(vindex, store, frame_dir, verbose=True)
 
         print(f"\nQ: {QUESTION}")
-        print(f"Gemini key: INVALIDATED")
+        print(f"OpenRouter key: INVALIDATED (forcing fallback to Groq)")
         print("-" * 60)
 
         result = agent.ask(QUESTION)

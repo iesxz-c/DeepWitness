@@ -1,8 +1,8 @@
 """Test backend fallback through HTTP endpoints.
 
-Launches a local FastAPI server with an INVALID GEMINI_API_KEY,
-then tests POST /query and GET /report against the running server.
-The server is killed when done (or on error).
+Launches a local FastAPI server with an INVALID OPENROUTER_API_KEY
+(new tier 1), then tests POST /query and GET /report against the
+running server.  The server is killed when done (or on error).
 """
 
 import json
@@ -20,8 +20,8 @@ CWD = os.path.join(os.path.dirname(__file__), "..")
 
 def main():
     env = os.environ.copy()
-    env["GEMINI_API_KEY"] = "sk-invalid-test-key"
-    # keep OPENROUTER and GROQ from the real environment
+    env["OPENROUTER_API_KEY"] = "sk-invalid-test-key"
+    # keep GEMINI and GROQ from the real environment
 
     proc = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "backend.main:app",
@@ -63,7 +63,7 @@ def _wait_for_server():
 
 def _test_query():
     print("=" * 60)
-    print("Scenario 1: POST /query  (Gemini invalid -> openrouter/free)")
+    print("Scenario 1: POST /query  (OpenRouter invalid -> Groq)")
     print("=" * 60)
     try:
         r = requests.post(
@@ -83,8 +83,8 @@ def _test_query():
         print(f"  answer:        {answer[:200]}...")
 
         errs = []
-        if provider == "gemini":
-            errs.append("provider_used is 'gemini' -- fallback did not trigger")
+        if provider not in ("groq",):
+            errs.append(f"provider_used: expected 'groq', got '{provider}'")
         if not answer or len(answer.strip()) < 10:
             errs.append("answer is empty or too short")
         if not isinstance(tools, list) or len(tools) == 0:
@@ -104,7 +104,7 @@ def _test_query():
 
 def _test_report():
     print(f"\n{'=' * 60}")
-    print("Scenario 2: GET /report  (Gemini invalid -> openrouter/free)")
+    print("Scenario 2: GET /report  (OpenRouter invalid -> Groq)")
     print("=" * 60)
     try:
         r = requests.get(f"{BASE}/report", timeout=TIMEOUT)
@@ -121,8 +121,8 @@ def _test_report():
         print(f"  structured keys: {skeys}")
 
         errs = []
-        if provider == "gemini":
-            errs.append("provider_used is 'gemini' -- fallback did not trigger")
+        if provider not in ("groq",):
+            errs.append(f"provider_used: expected 'groq', got '{provider}'")
         if not markdown or len(markdown) < 100:
             errs.append(f"markdown too short ({len(markdown)} chars)")
         if not isinstance(structured, dict):
