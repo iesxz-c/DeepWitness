@@ -1,4 +1,4 @@
-# CCTV Investigation System
+# Agentic AI CCTV Investigation System
 
 An AI-powered CCTV investigation platform that detects weapons and suspicious activity in video footage, builds event timelines, and generates investigation reports using multi-provider LLM agents.
 
