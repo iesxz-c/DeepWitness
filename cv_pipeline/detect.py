@@ -8,11 +8,12 @@ produced acceptable recall across all weapon classes:
   The knife class in this model has ~0 recall (only 13 training instances),
   so its knife predictions are discarded entirely.
 
-  knife_detect_v1_best.pt   — trained on a knife-focused dataset.
-  Class kept: "knife" only.
-  The remaining classes (Handgun, Slap, Violence, Person, etc.) each had
-  fewer than 10 training instances — statistically meaningless — so all
-  non-knife predictions from this model are discarded.
+  knife_detect_v2_best.pt   — 35-epoch retrain on a more diverse knife dataset.
+  Better generalization than v1 (recall 0.866 vs v1's narrower focus).
+  Class kept: "Knife" only.
+  The remaining classes (Handgun, Person, Punch, Weapon Holding, balaclava)
+  each had fewer than 10 training instances — statistically meaningless —
+  so all non-knife predictions from this model are discarded.
 
 The pipeline takes frames (optionally from a video via ingest.py conventions),
 runs both models on every Nth frame (configurable skip), filters each model's
@@ -29,13 +30,13 @@ from ultralytics import YOLO
 
 WEIGHTS_DIR = Path(__file__).resolve().parent / "weights"
 WEAPON_WEIGHTS = WEIGHTS_DIR / "weapon_detect_v1_best.pt"
-KNIFE_WEIGHTS = WEIGHTS_DIR / "knife_detect_v1_best.pt"
+KNIFE_WEIGHTS = WEIGHTS_DIR / "knife_detect_v2_best.pt"
 
 WEAPON_KEEP = {"gun", "heavy-weapon"}
-KNIFE_KEEP = {"knife"}
+KNIFE_KEEP = {"Knife"}
 
 WEAPON_MODEL_TAG = "weapon_v1"
-KNIFE_MODEL_TAG = "knife_v1"
+KNIFE_MODEL_TAG = "knife_v2"
 
 DEFAULT_SKIP = 5
 DEFAULT_CONFIDENCE = 0.5
