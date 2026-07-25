@@ -1,8 +1,12 @@
 import os
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
+
+from dotenv import load_dotenv
+load_dotenv()
 
 import cv2
 from fastapi import FastAPI, File, Form, Query, UploadFile
@@ -166,8 +170,10 @@ def report():
 @app.post("/videos")
 async def upload_video(
     file: UploadFile = File(...),
-    camera: str = Form("cam-upload"),
+    camera: str = Form(default=None),
 ):
+    if camera is None:
+        camera = f"cam-upload-{datetime.now():%Y%m%d-%H%M%S}"
     video_id = uuid.uuid4().hex[:12]
     dest = UPLOADS_DIR / f"{video_id}_{file.filename}"
     with open(dest, "wb") as f:

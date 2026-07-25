@@ -4,6 +4,9 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import google.generativeai as genai
 from openai import OpenAI
 
@@ -20,7 +23,7 @@ GEMINI_INITIAL_BACKOFF = 10
 GEMINI_MODEL = "gemini-2.5-flash"
 OPENROUTER_FREE_MODEL = "openrouter/free"
 OPENROUTER_PAID_MODEL = "openai/gpt-4o-mini"
-GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_MODEL = "openai/gpt-oss-20b"
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_HEADERS = {
@@ -172,6 +175,9 @@ def _openai_compatible_loop(
         {"role": "user", "content": question},
     ]
     tools_called = []
+    valid_tool_names = {t["name"] for t in tool_defs}
+    hallucination_count = 0
+    MAX_HALLUCINATIONS = 2
 
     while True:
         if verbose:
@@ -207,6 +213,27 @@ def _openai_compatible_loop(
         for tc in msg.tool_calls:
             name = tc.function.name
             args = json.loads(tc.function.arguments)
+
+            if name not in valid_tool_names:
+                hallucination_count += 1
+                if hallucination_count > MAX_HALLUCINATIONS:
+                    raise RuntimeError(
+                        f"{provider_tag}: model hallucinated invalid tool '{name}' "
+                        f"{hallucination_count} times — giving up"
+                    )
+                if verbose:
+                    print(f"  [{provider_tag}] HALLUCINATED tool '{name}' "
+                          f"(attempt {hallucination_count}/{MAX_HALLUCINATIONS})")
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": json.dumps({
+                        "error": f"Tool '{name}' does not exist. "
+                        f"Valid tools: {sorted(valid_tool_names)}"
+                    }),
+                })
+                continue
+
             tools_called.append(name)
             if verbose:
                 print(f"  [{provider_tag}] [tool] {name}({json.dumps(args)})")
@@ -284,6 +311,13 @@ FALLBACK_CHAIN = [
     ("gemini", _try_gemini),
 ]
 
+TIER_DESCRIPTIONS = [
+    "Tier 1: openrouter/free  — free-tier model via OpenRouter",
+    "Tier 2: groq             — Groq hosted llama-3.3-70b",
+    "Tier 3: openrouter/paid  — paid model via OpenRouter (same key as tier 1)",
+    "Tier 4: gemini           — Google Gemini (absolute last resort)",
+]
+
 
 def call_llm_with_tools(
     question: str,
@@ -293,7 +327,7 @@ def call_llm_with_tools(
     verbose: bool = False,
 ) -> dict[str, Any]:
     last_error = None
-    for name, fn in FALLBACK_CHAIN:
+    for i, (name, fn) in enumerate(FALLBACK_CHAIN):
         try:
             answer, tools_called = fn(
                 question=question,
@@ -309,14 +343,23 @@ def call_llm_with_tools(
             }
         except Exception as e:
             last_error = e
-            if verbose:
-                print(f"  [{name}] FAILED: {e}")
-            print(f"  falling back to next provider...")
+            err_type = type(e).__name__
+            err_msg = str(e)[:300]
+            print(f"  [{name}] FAILED — {err_type}: {err_msg}")
+            if i < len(FALLBACK_CHAIN) - 1:
+                next_name = FALLBACK_CHAIN[i + 1][0]
+                print(f"  [{name}] -> falling back to {next_name}")
 
     raise RuntimeError(f"All LLM providers failed. Last error: {last_error}")
 
 
 if __name__ == "__main__":
+    print("=" * 60)
+    print("FALLBACK CHAIN — strict priority order:")
+    for desc in TIER_DESCRIPTIONS:
+        print(f"  {desc}")
+    print("=" * 60)
+
     from schemas.event import Event
     from agents.store import EventStore, VectorIndex
 

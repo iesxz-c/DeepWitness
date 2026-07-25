@@ -8,6 +8,9 @@ schemas/event.py (structured Event model) and agents/store.py
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv
+load_dotenv()
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from schemas.event import Event
