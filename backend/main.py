@@ -87,10 +87,12 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="CCTV Investigation API", lifespan=lifespan)
 
+# CORS: local dev only — lock allow_origins to specific origins before deployment.
+# allow_credentials must be False when using "*" per the CORS spec.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -172,7 +174,7 @@ async def upload_video(
     file: UploadFile = File(...),
     camera: str = Form(default=None),
 ):
-    if camera is None:
+    if not camera or not camera.strip():
         camera = f"cam-upload-{datetime.now():%Y%m%d-%H%M%S}"
     video_id = uuid.uuid4().hex[:12]
     dest = UPLOADS_DIR / f"{video_id}_{file.filename}"

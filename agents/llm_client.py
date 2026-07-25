@@ -327,7 +327,10 @@ def call_llm_with_tools(
     verbose: bool = False,
 ) -> dict[str, Any]:
     last_error = None
+    tier_timings = []
+    overall_start = time.time()
     for i, (name, fn) in enumerate(FALLBACK_CHAIN):
+        tier_start = time.time()
         try:
             answer, tools_called = fn(
                 question=question,
@@ -336,20 +339,31 @@ def call_llm_with_tools(
                 tool_executor=tool_executor,
                 verbose=verbose,
             )
+            elapsed = time.time() - tier_start
+            tier_timings.append((name, elapsed, "OK"))
+            total = time.time() - overall_start
+            print(f"  [TIMING] {name}: {elapsed:.1f}s (OK)")
+            print(f"  [TIMING] total end-to-end: {total:.1f}s")
             return {
                 "answer": answer,
                 "tools_called": tools_called,
                 "provider_used": name,
+                "tier_timings": tier_timings,
             }
         except Exception as e:
+            elapsed = time.time() - tier_start
             last_error = e
             err_type = type(e).__name__
             err_msg = str(e)[:300]
+            tier_timings.append((name, elapsed, f"FAIL: {err_type}"))
+            print(f"  [TIMING] {name}: {elapsed:.1f}s (FAIL)")
             print(f"  [{name}] FAILED — {err_type}: {err_msg}")
             if i < len(FALLBACK_CHAIN) - 1:
                 next_name = FALLBACK_CHAIN[i + 1][0]
                 print(f"  [{name}] -> falling back to {next_name}")
 
+    total = time.time() - overall_start
+    print(f"  [TIMING] ALL FAILED — total: {total:.1f}s")
     raise RuntimeError(f"All LLM providers failed. Last error: {last_error}")
 
 

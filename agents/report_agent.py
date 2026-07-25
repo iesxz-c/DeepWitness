@@ -2,6 +2,7 @@ import json
 import os
 import re
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -93,6 +94,7 @@ def generate_report(
     def _noop_executor(name, args):
         return json.dumps({"error": "report does not use tools"})
 
+    t0 = time.time()
     result = call_llm_with_tools(
         question=prompt,
         system_prompt="You are an AI report generator for CCTV investigations.",
@@ -100,10 +102,19 @@ def generate_report(
         tool_executor=_noop_executor,
         verbose=verbose,
     )
+    llm_elapsed = time.time() - t0
 
     raw_md = result["answer"]
     provider = result["provider_used"]
+    tier_timings = result.get("tier_timings", [])
     structured = _parse_structured(raw_md)
+
+    print(f"  [TIMING] report_agent LLM call: {llm_elapsed:.1f}s (provider: {provider})")
+    if tier_timings:
+        print(f"  [TIMING] tier breakdown:")
+        for name, elapsed, status in tier_timings:
+            print(f"    {name}: {elapsed:.1f}s — {status}")
+
     return raw_md, structured, provider
 
 
