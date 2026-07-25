@@ -1,9 +1,11 @@
 import os
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, Query
+import cv2
+from fastapi import FastAPI, File, Form, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -16,6 +18,18 @@ from agents.timeline_agent import TimelineEntry, build_timeline
 from agents.evidence_agent import EvidenceBundle, get_evidence
 from agents.query_agent import InvestigatorAgent
 from agents.report_agent import generate_report
+from cv_pipeline.detect import detect_video
+from agents.event_builder import build_events_from_detections
+
+UPLOADS_DIR = Path(__file__).resolve().parent / "uploads"
+UPLOADS_DIR.mkdir(exist_ok=True)
+
+CLASS_TO_EVENT_TYPE = {
+    "gun": "weapon_detected",
+    "heavy-weapon": "weapon_detected",
+    "knife": "weapon_detected",
+    "Knife": "weapon_detected",
+}
 
 FAKE_EVENTS = [
     Event(time="08:15:00", camera="cam-entrance", event_type="intrusion",
@@ -36,10 +50,19 @@ FAKE_EVENTS = [
 ]
 
 
+class UploadedVideo:
+    def __init__(self, video_id: str, camera: str, path: Path, events_created: int):
+        self.video_id = video_id
+        self.camera = camera
+        self.path = path
+        self.events_created = events_created
+
+
 class State:
     store: EventStore
     vindex: VectorIndex
     agent: InvestigatorAgent
+    videos: list[UploadedVideo]
 
 
 state = State()
@@ -49,6 +72,7 @@ state = State()
 async def lifespan(app: FastAPI):
     state.store = EventStore(":memory:")
     state.vindex = VectorIndex()
+    state.videos = []
     for ev in FAKE_EVENTS:
         state.store.add_event(ev)
         state.vindex.add_event(ev)
@@ -61,7 +85,7 @@ app = FastAPI(title="CCTV Investigation API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -122,6 +146,63 @@ def report():
         "structured": structured,
         "provider_used": provider,
     }
+
+
+# ---------------------------------------------------------------------------
+# Video upload endpoints
+# ---------------------------------------------------------------------------
+# NOTE: POST /videos runs full YOLO inference synchronously on the request
+# thread. This is fine for a demo/defense but would need an async job queue
+# (Celery, BackgroundTasks, etc.) in production.
+#
+# Test with curl:
+#   curl -X POST http://localhost:8000/videos \
+#     -F "file=@cv_pipeline/test_clips/sample.mp4" \
+#     -F "camera=cam-upload"
+#
+#   curl http://localhost:8000/videos
+# ---------------------------------------------------------------------------
+
+@app.post("/videos")
+async def upload_video(
+    file: UploadFile = File(...),
+    camera: str = Form("cam-upload"),
+):
+    video_id = uuid.uuid4().hex[:12]
+    dest = UPLOADS_DIR / f"{video_id}_{file.filename}"
+    with open(dest, "wb") as f:
+        f.write(await file.read())
+
+    cap = cv2.VideoCapture(str(dest))
+    if not cap.isOpened():
+        os.remove(dest)
+        return {"error": f"Cannot open video: {file.filename}"}
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    cap.release()
+
+    detections_by_frame = list(detect_video(dest, skip=5, confidence=0.5))
+    events = build_events_from_detections(camera, detections_by_frame, fps)
+
+    for ev in events:
+        state.store.add_event(ev)
+        state.vindex.add_event(ev)
+
+    state.videos.append(UploadedVideo(video_id, camera, dest, len(events)))
+
+    return {
+        "video_id": video_id,
+        "camera": camera,
+        "events_created": len(events),
+        "status": "processed",
+    }
+
+
+@app.get("/videos")
+def list_videos():
+    return [
+        {"video_id": v.video_id, "camera": v.camera, "events_created": v.events_created}
+        for v in state.videos
+    ]
 
 
 if __name__ == "__main__":

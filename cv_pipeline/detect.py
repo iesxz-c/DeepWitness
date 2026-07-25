@@ -7,6 +7,9 @@ produced acceptable recall across all weapon classes:
   Classes kept: "gun", "heavy-weapon".
   The knife class in this model has ~0 recall (only 13 training instances),
   so its knife predictions are discarded entirely.
+  NOTE: v2 was tested on positive_sample.mp4 and showed regression vs v1
+  (lower peak conf 0.854 vs 0.943, 4 frames lost detections at conf=0.5),
+  so v1 is kept as the proven, reliable weapon detector.
 
   knife_detect_v2_best.pt   — 35-epoch retrain on a more diverse knife dataset.
   Better generalization than v1 (recall 0.866 vs v1's narrower focus).
@@ -14,6 +17,10 @@ produced acceptable recall across all weapon classes:
   The remaining classes (Handgun, Person, Punch, Weapon Holding, balaclava)
   each had fewer than 10 training instances — statistically meaningless —
   so all non-knife predictions from this model are discarded.
+  KNOWN FALSE POSITIVE: knife_v2 occasionally fires on gun-only clips
+  (observed frame 365 on positive_sample.mp4, conf=0.527). Suppressing this
+  would require a much larger/more diverse knife dataset — diminishing returns
+  for now.
 
 The pipeline takes frames (optionally from a video via ingest.py conventions),
 runs both models on every Nth frame (configurable skip), filters each model's
