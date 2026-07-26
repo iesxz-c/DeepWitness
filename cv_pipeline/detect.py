@@ -1,32 +1,26 @@
-"""Merged dual-model weapon/knife detection pipeline.
+"""Merged triple-model weapon/knife/person detection pipeline.
 
-Two YOLOv8 models are used instead of one because no single training run
-produced acceptable recall across all weapon classes:
+Three YOLOv8 models are used:
 
   weapon_detect_v1_best.pt  — trained on gun + heavy-weapon + knife data.
   Classes kept: "gun", "heavy-weapon".
   The knife class in this model has ~0 recall (only 13 training instances),
   so its knife predictions are discarded entirely.
-  NOTE: v2 was tested on positive_sample.mp4 and showed regression vs v1
-  (lower peak conf 0.854 vs 0.943, 4 frames lost detections at conf=0.5),
-  so v1 is kept as the proven, reliable weapon detector.
 
   knife_detect_v2_best.pt   — 35-epoch retrain on a more diverse knife dataset.
   Better generalization than v1 (recall 0.866 vs v1's narrower focus).
   Class kept: "Knife" only.
-  The remaining classes (Handgun, Person, Punch, Weapon Holding, balaclava)
-  each had fewer than 10 training instances — statistically meaningless —
-  so all non-knife predictions from this model are discarded.
-  KNOWN FALSE POSITIVE: knife_v2 occasionally fires on gun-only clips
-  (observed frame 365 on positive_sample.mp4, conf=0.527). Suppressing this
-  would require a much larger/more diverse knife dataset — diminishing returns
-  for now.
+  The remaining classes each had fewer than 10 training instances —
+  statistically meaningless — so all non-knife predictions are discarded.
 
-The pipeline takes frames (optionally from a video via ingest.py conventions),
-runs both models on every Nth frame (configurable skip), filters each model's
-raw output to its "good" classes, and merges both into one detection list per
-frame with a source_model tag indicating which weights file produced each
-detection.
+  yolov8n.pt               — stock COCO-pretrained YOLOv8n (no fine-tuning).
+  Class kept: "person" only (class 0). All other 79 COCO classes discarded.
+  Used to detect people in frame for situational awareness. May not fire on
+  partial-body / hand-only framing (e.g. close-up gun clips).
+
+The pipeline runs all three models on every Nth frame (configurable skip),
+filters each model's raw output to its allowed classes, and merges into one
+detection list per frame with a source_model tag.
 """
 
 import sys
@@ -41,19 +35,23 @@ KNIFE_WEIGHTS = WEIGHTS_DIR / "knife_detect_v2_best.pt"
 
 WEAPON_KEEP = {"gun", "heavy-weapon"}
 KNIFE_KEEP = {"Knife"}
+PERSON_KEEP = {"person"}
 
 WEAPON_MODEL_TAG = "weapon_v1"
 KNIFE_MODEL_TAG = "knife_v2"
+PERSON_MODEL_TAG = "person_coco"
 
 DEFAULT_SKIP = 5
 DEFAULT_CONF_WEAPON = 0.5
 DEFAULT_CONF_KNIFE = 0.65
+DEFAULT_CONF_PERSON = 0.5
 
 
 def _load_models():
     weapon = YOLO(str(WEAPON_WEIGHTS))
     knife = YOLO(str(KNIFE_WEIGHTS))
-    return weapon, knife
+    person = YOLO("yolov8n.pt")
+    return weapon, knife, person
 
 
 def _filter(results, allowed_classes: set[str]) -> list[dict]:
@@ -74,12 +72,14 @@ def _filter(results, allowed_classes: set[str]) -> list[dict]:
     return detections
 
 
-def detect_frame(frame, weapon_model, knife_model,
+def detect_frame(frame, weapon_model, knife_model, person_model,
                  conf_weapon: float = DEFAULT_CONF_WEAPON,
-                 conf_knife: float = DEFAULT_CONF_KNIFE) -> list[dict]:
-    """Run both models on a single BGR frame and return merged detections."""
+                 conf_knife: float = DEFAULT_CONF_KNIFE,
+                 conf_person: float = DEFAULT_CONF_PERSON) -> list[dict]:
+    """Run all three models on a single BGR frame and return merged detections."""
     weapon_results = weapon_model(frame, conf=conf_weapon, verbose=False)
     knife_results = knife_model(frame, conf=conf_knife, verbose=False)
+    person_results = person_model(frame, conf=conf_person, verbose=False)
 
     weapon_dets = _filter(weapon_results, WEAPON_KEEP)
     for d in weapon_dets:
@@ -89,14 +89,19 @@ def detect_frame(frame, weapon_model, knife_model,
     for d in knife_dets:
         d["source_model"] = KNIFE_MODEL_TAG
 
-    return weapon_dets + knife_dets
+    person_dets = _filter(person_results, PERSON_KEEP)
+    for d in person_dets:
+        d["source_model"] = PERSON_MODEL_TAG
+
+    return weapon_dets + knife_dets + person_dets
 
 
 def detect_video(video_path: str | Path, skip: int = DEFAULT_SKIP,
                  conf_weapon: float = DEFAULT_CONF_WEAPON,
-                 conf_knife: float = DEFAULT_CONF_KNIFE):
+                 conf_knife: float = DEFAULT_CONF_KNIFE,
+                 conf_person: float = DEFAULT_CONF_PERSON):
     """Yield (frame_index, detections) for every processed frame."""
-    weapon_model, knife_model = _load_models()
+    weapon_model, knife_model, person_model = _load_models()
 
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
@@ -109,8 +114,8 @@ def detect_video(video_path: str | Path, skip: int = DEFAULT_SKIP,
             if not ret:
                 break
             if frame_idx % skip == 0:
-                dets = detect_frame(frame, weapon_model, knife_model,
-                                    conf_weapon, conf_knife)
+                dets = detect_frame(frame, weapon_model, knife_model, person_model,
+                                    conf_weapon, conf_knife, conf_person)
                 yield frame_idx, dets
             frame_idx += 1
     finally:
@@ -130,6 +135,8 @@ if __name__ == "__main__":
                         help=f"Weapon model confidence threshold (default: {DEFAULT_CONF_WEAPON})")
     parser.add_argument("--conf-knife", type=float, default=DEFAULT_CONF_KNIFE,
                         help=f"Knife model confidence threshold (default: {DEFAULT_CONF_KNIFE})")
+    parser.add_argument("--conf-person", type=float, default=DEFAULT_CONF_PERSON,
+                        help=f"Person (COCO) model confidence threshold (default: {DEFAULT_CONF_PERSON})")
     args = parser.parse_args()
 
     video_path = Path(args.video)
@@ -139,9 +146,11 @@ if __name__ == "__main__":
 
     print(f"Video:     {video_path}")
     print(f"Skip:      every {args.skip} frames")
-    print(f"Confidence: weapon={args.conf_weapon}, knife={args.conf_knife}")
+    print(f"Confidence: weapon={args.conf_weapon}, knife={args.conf_knife}, "
+          f"person={args.conf_person}")
     print(f"Weights:   {WEAPON_MODEL_TAG}={WEAPON_WEIGHTS.name}, "
-          f"{KNIFE_MODEL_TAG}={KNIFE_WEIGHTS.name}")
+          f"{KNIFE_MODEL_TAG}={KNIFE_WEIGHTS.name}, "
+          f"{PERSON_MODEL_TAG}=yolov8n.pt")
     print("=" * 70)
 
     total_frames = 0
@@ -154,7 +163,8 @@ if __name__ == "__main__":
 
     for frame_idx, dets in detect_video(video_path, skip=args.skip,
                                         conf_weapon=args.conf_weapon,
-                                        conf_knife=args.conf_knife):
+                                        conf_knife=args.conf_knife,
+                                        conf_person=args.conf_person):
         processed_frames += 1
         total_frames = max(total_frames, frame_idx + 1)
         total_detections += len(dets)

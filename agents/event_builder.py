@@ -20,6 +20,7 @@ CLASS_TO_EVENT_TYPE = {
     "gun": "weapon_detected",
     "heavy-weapon": "weapon_detected",
     "knife": "weapon_detected",
+    "person": "person_detected",
 }
 
 

@@ -199,7 +199,7 @@ async def upload_video(
     fps = cap.get(cv2.CAP_PROP_FPS)
     cap.release()
 
-    detections_by_frame = list(detect_video(dest, skip=5, conf_weapon=0.5, conf_knife=0.65))
+    detections_by_frame = list(detect_video(dest, skip=5, conf_weapon=0.5, conf_knife=0.65, conf_person=0.5))
     events = build_events_from_detections(camera, detections_by_frame, fps)
 
     for ev in events:
