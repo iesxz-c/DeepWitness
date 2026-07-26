@@ -21,6 +21,11 @@ CLASS_TO_EVENT_TYPE = {
     "heavy-weapon": "weapon_detected",
     "knife": "weapon_detected",
     "person": "person_detected",
+    "backpack": "object_detected",
+    "handbag": "object_detected",
+    "suitcase": "object_detected",
+    "car": "vehicle_detected",
+    "cell phone": "object_detected",
 }
 
 
