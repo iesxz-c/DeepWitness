@@ -1,6 +1,7 @@
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -84,7 +85,11 @@ class InvestigatorAgent:
                 query=args["query"],
                 k=int(args.get("k", 5)),
             )
-            return json.dumps([e.model_dump() for e in results], indent=2)
+            result_json = json.dumps([e.model_dump() for e in results], indent=2)
+            approx_tokens = len(result_json) // 4
+            print(f"  [TOKENS] search_events result: ~{approx_tokens} tokens "
+                  f"({len(results)} events returned)")
+            return result_json
 
         elif name == "get_timeline":
             all_events = self.event_store.get_events(
@@ -92,7 +97,23 @@ class InvestigatorAgent:
                 end_time=args["end_time"],
             )
             timeline = build_timeline(all_events)
-            return json.dumps([t.model_dump() for t in timeline], indent=2)
+            MAX_TIMELINE_ENTRIES = 20
+            truncated = False
+            if len(timeline) > MAX_TIMELINE_ENTRIES:
+                timeline = timeline[:MAX_TIMELINE_ENTRIES]
+                truncated = True
+            result_json = json.dumps([t.model_dump() for t in timeline], indent=2)
+            if truncated:
+                result_json = json.dumps({
+                    "timeline": json.loads(result_json),
+                    "note": f"Showing first {MAX_TIMELINE_ENTRIES} of {len(all_events)} total events. "
+                            f"Use search_events for targeted queries.",
+                })
+            approx_tokens = len(result_json) // 4
+            print(f"  [TOKENS] get_timeline result: ~{approx_tokens} tokens "
+                  f"({len(all_events)} raw events -> {len(timeline)} timeline entries"
+                  f"{', TRUNCATED' if truncated else ''})")
+            return result_json
 
         elif name == "get_evidence":
             events = self.event_store.get_events(
@@ -104,16 +125,22 @@ class InvestigatorAgent:
                 return json.dumps({"error": "no event found for that camera and time"})
 
             bundle = get_evidence(events[0], self.frame_cache_dir)
-            return json.dumps({
+            result_json = json.dumps({
                 "confidence": bundle.confidence,
                 "thumbnail_paths": bundle.thumbnail_paths,
                 "event": bundle.event.model_dump(),
             }, indent=2)
+            approx_tokens = len(result_json) // 4
+            print(f"  [TOKENS] get_evidence result: ~{approx_tokens} tokens")
+            return result_json
 
         return json.dumps({"error": f"unknown tool: {name}"})
 
     def ask(self, question: str) -> dict[str, Any]:
         self.tool_log = []
+        approx_tokens = len(question) // 4
+        print(f"  [TOKENS] query_agent question: ~{approx_tokens} tokens")
+        t0 = time.time()
         result = call_llm_with_tools(
             question=question,
             system_prompt=SYSTEM_PROMPT,
@@ -121,7 +148,9 @@ class InvestigatorAgent:
             tool_executor=self._execute_tool,
             verbose=self.verbose,
         )
+        elapsed = time.time() - t0
         self.provider_used = result["provider_used"]
+        print(f"  [TIMING] query_agent total: {elapsed:.1f}s (provider: {result['provider_used']})")
         return result
 
 

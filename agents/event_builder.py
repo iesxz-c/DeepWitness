@@ -86,8 +86,10 @@ if __name__ == "__main__":
                         help="Camera name to assign to events (default: cam-test)")
     parser.add_argument("--skip", type=int, default=5,
                         help="Process every Nth frame (default: 5)")
-    parser.add_argument("--conf", type=float, default=0.5,
-                        help="Confidence threshold (default: 0.5)")
+    parser.add_argument("--conf-weapon", type=float, default=0.5,
+                        help="Weapon model confidence threshold (default: 0.5)")
+    parser.add_argument("--conf-knife", type=float, default=0.65,
+                        help="Knife model confidence threshold (default: 0.65)")
     args = parser.parse_args()
 
     video_path = Path(args.video)
@@ -111,7 +113,9 @@ if __name__ == "__main__":
     print(f"Conf:    {args.conf}")
     print("=" * 60)
 
-    detections_by_frame = list(detect_video(video_path, skip=args.skip, confidence=args.conf))
+    detections_by_frame = list(detect_video(video_path, skip=args.skip,
+                                            conf_weapon=args.conf_weapon,
+                                            conf_knife=args.conf_knife))
     print(f"Frames with detections: "
           f"{sum(1 for _, d in detections_by_frame if d)} / {len(detections_by_frame)} processed")
 

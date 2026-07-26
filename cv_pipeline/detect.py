@@ -46,7 +46,8 @@ WEAPON_MODEL_TAG = "weapon_v1"
 KNIFE_MODEL_TAG = "knife_v2"
 
 DEFAULT_SKIP = 5
-DEFAULT_CONFIDENCE = 0.5
+DEFAULT_CONF_WEAPON = 0.5
+DEFAULT_CONF_KNIFE = 0.65
 
 
 def _load_models():
@@ -74,10 +75,11 @@ def _filter(results, allowed_classes: set[str]) -> list[dict]:
 
 
 def detect_frame(frame, weapon_model, knife_model,
-                 confidence: float = DEFAULT_CONFIDENCE) -> list[dict]:
+                 conf_weapon: float = DEFAULT_CONF_WEAPON,
+                 conf_knife: float = DEFAULT_CONF_KNIFE) -> list[dict]:
     """Run both models on a single BGR frame and return merged detections."""
-    weapon_results = weapon_model(frame, conf=confidence, verbose=False)
-    knife_results = knife_model(frame, conf=confidence, verbose=False)
+    weapon_results = weapon_model(frame, conf=conf_weapon, verbose=False)
+    knife_results = knife_model(frame, conf=conf_knife, verbose=False)
 
     weapon_dets = _filter(weapon_results, WEAPON_KEEP)
     for d in weapon_dets:
@@ -91,7 +93,8 @@ def detect_frame(frame, weapon_model, knife_model,
 
 
 def detect_video(video_path: str | Path, skip: int = DEFAULT_SKIP,
-                 confidence: float = DEFAULT_CONFIDENCE):
+                 conf_weapon: float = DEFAULT_CONF_WEAPON,
+                 conf_knife: float = DEFAULT_CONF_KNIFE):
     """Yield (frame_index, detections) for every processed frame."""
     weapon_model, knife_model = _load_models()
 
@@ -106,7 +109,8 @@ def detect_video(video_path: str | Path, skip: int = DEFAULT_SKIP,
             if not ret:
                 break
             if frame_idx % skip == 0:
-                dets = detect_frame(frame, weapon_model, knife_model, confidence)
+                dets = detect_frame(frame, weapon_model, knife_model,
+                                    conf_weapon, conf_knife)
                 yield frame_idx, dets
             frame_idx += 1
     finally:
@@ -122,8 +126,10 @@ if __name__ == "__main__":
                         help="Path to input video (default: cv_pipeline/test_clips/sample.mp4)")
     parser.add_argument("--skip", type=int, default=DEFAULT_SKIP,
                         help=f"Process every Nth frame (default: {DEFAULT_SKIP})")
-    parser.add_argument("--conf", type=float, default=DEFAULT_CONFIDENCE,
-                        help=f"Minimum confidence threshold (default: {DEFAULT_CONFIDENCE})")
+    parser.add_argument("--conf-weapon", type=float, default=DEFAULT_CONF_WEAPON,
+                        help=f"Weapon model confidence threshold (default: {DEFAULT_CONF_WEAPON})")
+    parser.add_argument("--conf-knife", type=float, default=DEFAULT_CONF_KNIFE,
+                        help=f"Knife model confidence threshold (default: {DEFAULT_CONF_KNIFE})")
     args = parser.parse_args()
 
     video_path = Path(args.video)
@@ -133,7 +139,7 @@ if __name__ == "__main__":
 
     print(f"Video:     {video_path}")
     print(f"Skip:      every {args.skip} frames")
-    print(f"Confidence: {args.conf}")
+    print(f"Confidence: weapon={args.conf_weapon}, knife={args.conf_knife}")
     print(f"Weights:   {WEAPON_MODEL_TAG}={WEAPON_WEIGHTS.name}, "
           f"{KNIFE_MODEL_TAG}={KNIFE_WEIGHTS.name}")
     print("=" * 70)
@@ -146,7 +152,9 @@ if __name__ == "__main__":
     video_len = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) if cap.isOpened() else 0
     cap.release()
 
-    for frame_idx, dets in detect_video(video_path, skip=args.skip, confidence=args.conf):
+    for frame_idx, dets in detect_video(video_path, skip=args.skip,
+                                        conf_weapon=args.conf_weapon,
+                                        conf_knife=args.conf_knife):
         processed_frames += 1
         total_frames = max(total_frames, frame_idx + 1)
         total_detections += len(dets)

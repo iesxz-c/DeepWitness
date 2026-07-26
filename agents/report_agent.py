@@ -65,12 +65,74 @@ def _parse_structured(raw: str) -> dict[str, Any]:
     }
 
 
+def _aggregate_timeline(timeline: list[TimelineEntry]) -> list[dict]:
+    """Collapse repeated/similar timeline entries into summary lines.
+
+    Groups entries by event_type. For groups with >1 entry, produces a single
+    summary: "N detections of TYPE between TIME_START–TIME_END, confidence
+    CONF_MIN–CONF_MAX, cameras: CAM1, CAM2, ...". Single entries pass through
+    unchanged. This cuts input tokens dramatically for cases like 85 gun
+    detections that would otherwise be 21 separate timeline rows.
+    """
+    from collections import defaultdict
+
+    groups: dict[str, list[TimelineEntry]] = defaultdict(list)
+    for entry in timeline:
+        groups[entry.event_type].append(entry)
+
+    aggregated = []
+    for event_type, entries in groups.items():
+        if len(entries) == 1:
+            e = entries[0]
+            aggregated.append({
+                "time": e.time,
+                "event_type": e.event_type,
+                "description": e.description,
+                "confidence": e.confidence,
+                "sources": e.sources,
+            })
+            continue
+
+        times = sorted([e.time for e in entries])
+        confs = [e.confidence for e in entries]
+        all_sources = []
+        for e in entries:
+            for s in e.sources:
+                if s not in all_sources:
+                    all_sources.append(s)
+
+        descriptions = list({e.description for e in entries})
+        if len(descriptions) == 1:
+            desc_summary = descriptions[0]
+        else:
+            label = event_type.replace("_", " ")
+            desc_summary = f"{len(entries)} instances of {label}"
+
+        aggregated.append({
+            "time": f"{times[0]}–{times[-1]}",
+            "event_type": event_type,
+            "description": (
+                f"{len(entries)} detections: {desc_summary} | "
+                f"confidence {min(confs):.2f}–{max(confs):.2f} | "
+                f"cameras: {', '.join(all_sources)}"
+            ),
+            "confidence": max(confs),
+            "sources": all_sources,
+            "count": len(entries),
+        })
+
+    return aggregated
+
+
 def generate_report(
     timeline: list[TimelineEntry],
     evidence: list[EvidenceBundle],
     verbose: bool = False,
 ) -> tuple[str, dict[str, Any], str]:
-    timeline_data = [t.model_dump() for t in timeline]
+    raw_count = len(timeline)
+    aggregated_timeline = _aggregate_timeline(timeline)
+    timeline_data = aggregated_timeline
+
     evidence_data = []
     for b in evidence:
         entry = {
@@ -90,6 +152,11 @@ def generate_report(
     )
 
     prompt = REPORT_PROMPT + context + REPORT_FORMAT_INSTRUCTIONS
+
+    approx_tokens = len(prompt) // 4
+    print(f"  [TOKENS] report_agent input: ~{approx_tokens} tokens "
+          f"({raw_count} raw timeline -> {len(aggregated_timeline)} aggregated, "
+          f"{len(evidence)} evidence bundles)")
 
     def _noop_executor(name, args):
         return json.dumps({"error": "report does not use tools"})
