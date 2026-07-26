@@ -9,10 +9,10 @@ Three YOLOv8 models are used:
   Class kept: "Knife" only.
 
   yolov8n.pt               — stock COCO-pretrained YOLOv8n (no fine-tuning).
-  Classes kept: "person", "backpack", "handbag", "suitcase", "car",
-  "cell phone". All other 74 COCO classes discarded.
-  Tagged source_model="coco_general". Provides situational awareness beyond
-  weapons — e.g. abandoned bags, suspects with luggage, people in frame.
+  Classes kept: all 80 COCO classes (person, car, backpack, knife, etc.).
+  Tagged source_model="coco_general". Provides full scene understanding —
+  people, vehicles, bags, animals, indoor objects, food, etc.
+  NOTE: COCO "knife" may overlap with knife_v2's specialized detections.
 
 The pipeline runs all three models on every Nth frame (configurable skip),
 filters each model's raw output to its allowed classes, and merges into one
@@ -31,7 +31,21 @@ KNIFE_WEIGHTS = WEIGHTS_DIR / "knife_detect_v2_best.pt"
 
 WEAPON_KEEP = {"gun", "heavy-weapon"}
 KNIFE_KEEP = {"Knife"}
-COCO_KEEP = {"person", "backpack", "handbag", "suitcase", "car", "cell phone"}
+COCO_KEEP = {
+    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train",
+    "truck", "boat", "traffic light", "fire hydrant", "stop sign",
+    "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep",
+    "cow", "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella",
+    "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard",
+    "sports ball", "kite", "baseball bat", "baseball glove", "skateboard",
+    "surfboard", "tennis racket", "bottle", "wine glass", "cup", "fork",
+    "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange",
+    "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair",
+    "couch", "potted plant", "bed", "dining table", "toilet", "tv",
+    "laptop", "mouse", "remote", "keyboard", "cell phone", "microwave",
+    "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase",
+    "scissors", "teddy bear", "hair drier", "toothbrush",
+}
 
 WEAPON_MODEL_TAG = "weapon_v1"
 KNIFE_MODEL_TAG = "knife_v2"
@@ -39,7 +53,7 @@ COCO_MODEL_TAG = "coco_general"
 
 DEFAULT_SKIP = 5
 DEFAULT_CONF_WEAPON = 0.5
-DEFAULT_CONF_KNIFE = 0.65
+DEFAULT_CONF_KNIFE = 0.7
 DEFAULT_CONF_COCO = 0.5
 
 
@@ -165,11 +179,20 @@ if __name__ == "__main__":
         total_frames = max(total_frames, frame_idx + 1)
         total_detections += len(dets)
 
+        knife_v2_hits = [d for d in dets if d["source_model"] == "knife_v2"]
+        coco_knife_hits = [d for d in dets if d["source_model"] == "coco_general"
+                           and d["class_name"] == "knife"]
+
         if dets:
             print(f"\nFrame {frame_idx} ({len(dets)} detection{'s' if len(dets) != 1 else ''}):")
             for d in dets:
                 print(f"  [{d['source_model']:>10}] {d['class_name']:<15} "
                       f"conf={d['confidence']:.3f}  bbox={d['bbox']}")
+            if knife_v2_hits and coco_knife_hits:
+                kv2_max = max(d["confidence"] for d in knife_v2_hits)
+                coco_max = max(d["confidence"] for d in coco_knife_hits)
+                print(f"  *** CROSS-MODEL AGREEMENT: knife_v2 (max={kv2_max:.3f}) "
+                      f"+ coco_general knife (max={coco_max:.3f}) ***")
         else:
             print(f"\nFrame {frame_idx}: no detections")
 
