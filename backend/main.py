@@ -147,6 +147,17 @@ def report():
     timeline_entries = build_timeline(all_events)
     evidence_bundles = [get_evidence(ev, Path(".")) for ev in all_events]
     markdown, structured, provider = generate_report(timeline_entries, evidence_bundles)
+
+    # Strip accidental code fences the LLM sometimes wraps output in
+    stripped = markdown.strip()
+    if stripped.startswith("```"):
+        first_nl = stripped.find("\n")
+        if first_nl != -1:
+            stripped = stripped[first_nl + 1:]
+        if stripped.endswith("```"):
+            stripped = stripped[:-3].rstrip()
+    markdown = stripped
+
     return {
         "markdown": markdown,
         "structured": structured,
