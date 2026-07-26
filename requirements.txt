@@ -1,1 +1,12 @@
 python-dotenv
+transformers
+torch
+faiss-cpu
+sentence-transformers
+opencv-python
+ultralytics
+supervision
+pydantic
+uvicorn
+fastapi
+python-multipart

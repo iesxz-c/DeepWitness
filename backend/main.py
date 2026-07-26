@@ -28,6 +28,8 @@ from agents.event_builder import build_events_from_detections
 UPLOADS_DIR = Path(__file__).resolve().parent / "uploads"
 UPLOADS_DIR.mkdir(exist_ok=True)
 
+EVENTS_DB = Path(__file__).resolve().parent / "events.db"
+
 CLASS_TO_EVENT_TYPE = {
     "gun": "weapon_detected",
     "heavy-weapon": "weapon_detected",
@@ -74,12 +76,19 @@ state = State()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    state.store = EventStore(":memory:")
+    state.store = EventStore(str(EVENTS_DB))
     state.vindex = VectorIndex()
     state.videos = []
-    for ev in FAKE_EVENTS:
-        state.store.add_event(ev)
-        state.vindex.add_event(ev)
+
+    existing = state.store.get_events()
+    if not existing:
+        for ev in FAKE_EVENTS:
+            state.store.add_event(ev)
+            state.vindex.add_event(ev)
+    else:
+        for ev in existing:
+            state.vindex.add_event(ev)
+
     state.agent = InvestigatorAgent(state.vindex, state.store, Path("."))
     yield
     state.store.close()

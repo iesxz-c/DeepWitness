@@ -45,3 +45,6 @@ Thumbs.db
 
 # Uploads
 backend/uploads/
+
+# Runtime data
+backend/events.db
