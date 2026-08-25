@@ -324,6 +324,115 @@ def print_summary_table(eval_results: dict):
             print(f"{cls:<20} {s['total']:>4}  {u_acc:>7.1%}   {w_acc:>8.1%}   {delta:+.1%}")
 
 
+def visualize_clip(
+    video_path: str | Path,
+    model,
+    device,
+    window_frames: int = _NUM_FRAMES,
+    stride: int = 30,
+    motion_skip: int = 1,
+    output_path: Optional[Path] = None,
+) -> Path:
+    """Create a composite visualization of window frames with annotations."""
+    cap = cv2.VideoCapture(str(video_path))
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    cap.release()
+
+    # Run analysis with motion weighting to get per-window data
+    result = analyze_clip(
+        video_path, model, device,
+        window_frames=window_frames,
+        stride=stride,
+        motion_skip=motion_skip,
+        use_motion_weighting=True,
+    )
+
+    per_window = result["per_window"]
+    if not per_window:
+        raise ValueError("No windows found in clip")
+
+    # Compute normalized weights (motion energies)
+    energies = [w["motion"] for w in per_window]
+    total_energy = sum(energies)
+    weights = [e / total_energy if total_energy > 0 else 1.0 / len(energies) for e in energies]
+
+    # Extract middle frame of each window
+    cap = cv2.VideoCapture(str(video_path))
+    frames = []
+    for i, w in enumerate(per_window):
+        start_frame = int(w["time"] * fps)
+        middle_frame = start_frame + window_frames // 2
+        middle_frame = min(middle_frame, total - 1)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, middle_frame)
+        ret, frame = cap.read()
+        if ret:
+            frames.append((frame, w, weights[i], i))
+    cap.release()
+
+    if not frames:
+        raise ValueError("Could not extract frames")
+
+    # Build composite image
+    frame_h, frame_w = 240, 320  # resized frame size
+    pad = 10
+    info_h = 120  # height for annotations below each frame
+    n = len(frames)
+    composite_w = n * (frame_w + pad) + pad
+    composite_h = frame_h + info_h + 80  # 80px for header
+    composite = np.zeros((composite_h, composite_w, 3), dtype=np.uint8)
+    composite[:] = (30, 30, 35)  # dark background
+
+    # Header
+    header = f"{Path(video_path).name}  |  {n} windows  |  stride={stride}  |  window={window_frames} frames"
+    cv2.putText(composite, header, (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+    cv2.putText(composite, f"Model: {MODEL_NAME.split('/')[-1]}  |  Motion-weighted aggregation", (15, 50),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
+
+    # Place frames and annotations
+    for i, (frame, w, weight, idx) in enumerate(frames):
+        x = pad + i * (frame_w + pad)
+        y = 70
+
+        # Resize and place frame
+        small = cv2.resize(frame, (frame_w, frame_h))
+        composite[y:y+frame_h, x:x+frame_w] = small
+
+        # Window border color based on weight (green=high, red=low)
+        border_color = (0, int(255 * weight), int(255 * (1 - weight)))
+        cv2.rectangle(composite, (x, y), (x + frame_w, y + frame_h), border_color, 2)
+
+        # Annotations below frame
+        ay = y + frame_h + 5
+        t_start = w["time"]
+        t_end = t_start + window_frames / (cap.get(cv2.CAP_PROP_FPS) if cap.isOpened() else fps)
+
+        lines = [
+            f"Window {idx+1}/{n}",
+            f"Time: {t_start:.1f}s - {t_end:.1f}s",
+            f"Motion: {w['motion']:.3f}  |  Weight: {weight:.3f}",
+            f"Pred: {w['label']} ({w['conf']:.2f})",
+        ]
+
+        for j, line in enumerate(lines):
+            color = (255, 255, 255) if j < 3 else (0, 255, 150)
+            cv2.putText(composite, line, (x + 5, ay + j * 22),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
+
+    # Footer with aggregate prediction
+    agg = result["aggregation"]
+    footer_y = composite_h - 30
+    cv2.putText(composite, f"AGGREGATE: {agg['label']}  ({agg['confidence']:.3f})  |  Top-3: "
+                f"{', '.join(f'{l[:10]} {p:.2f}' for l,p in sorted(agg['probabilities'].items(), key=lambda x: -x[1])[:3])}",
+                (15, footer_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+
+    # Save
+    if output_path is None:
+        output_path = Path(video_path).with_stem(f"{Path(video_path).stem}_window_breakdown").with_suffix(".jpg")
+    cv2.imwrite(str(output_path), composite)
+    return output_path
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Compare uniform vs motion-weighted action aggregation on UCF-Crime test set."
@@ -360,8 +469,33 @@ if __name__ == "__main__":
         "--clips", nargs="+",
         help="Specific clip paths (original single-clip mode)"
     )
+    parser.add_argument(
+        "--visualize", action="store_true",
+        help="Create window breakdown visualization for --clips"
+    )
 
     args = parser.parse_args()
+
+    # Visualization mode
+    if args.visualize and args.clips:
+        clips = [Path(c) for c in args.clips]
+        for clip in clips:
+            if not clip.exists():
+                print(f"ERROR: clip not found: {clip}")
+                sys.exit(1)
+
+        print(f"Loading model: {MODEL_NAME} ...")
+        model, device = _load_model()
+        print(f"Device: {device}\n")
+
+        for clip in clips:
+            print(f"Visualizing: {clip.name}")
+            out = visualize_clip(clip, model, device,
+                                window_frames=args.window,
+                                stride=args.stride,
+                                motion_skip=args.motion_skip)
+            print(f"Saved: {out}")
+        sys.exit(0)
 
     # Original single-clip mode
     if args.clips:
