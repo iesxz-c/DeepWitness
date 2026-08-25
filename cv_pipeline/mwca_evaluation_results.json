@@ -1,0 +1,140 @@
+{
+  "total_clips": 8,
+  "uniform_accuracy": 0.375,
+  "motion_weighted_accuracy": 0.25,
+  "uniform_correct": 3,
+  "motion_weighted_correct": 2,
+  "predictions_changed": 1,
+  "changed_toward_correct": 0,
+  "changed_away_from_correct": 1,
+  "per_clip": [
+    {
+      "clip": "Abuse001_x264.mp4",
+      "ground_truth": "Abuse",
+      "uniform": {
+        "label": "Abuse",
+        "confidence": 0.9677129030227661,
+        "correct": true
+      },
+      "motion_weighted": {
+        "label": "Abuse",
+        "confidence": 0.9540629386901855,
+        "correct": true
+      },
+      "changed": false,
+      "change_direction": "neutral"
+    },
+    {
+      "clip": "Abuse002_x264.mp4",
+      "ground_truth": "Abuse",
+      "uniform": {
+        "label": "Road Accidents",
+        "confidence": 0.47483955323696136,
+        "correct": false
+      },
+      "motion_weighted": {
+        "label": "Road Accidents",
+        "confidence": 0.5569167733192444,
+        "correct": false
+      },
+      "changed": false,
+      "change_direction": "neutral"
+    },
+    {
+      "clip": "Arrest001_x264.mp4",
+      "ground_truth": "Arrest",
+      "uniform": {
+        "label": "Arrest",
+        "confidence": 0.4072473803535104,
+        "correct": true
+      },
+      "motion_weighted": {
+        "label": "Arrest",
+        "confidence": 0.4188211262226105,
+        "correct": true
+      },
+      "changed": false,
+      "change_direction": "neutral"
+    },
+    {
+      "clip": "Arrest002_x264.mp4",
+      "ground_truth": "Arrest",
+      "uniform": {
+        "label": "Abuse",
+        "confidence": 0.7123201588789622,
+        "correct": false
+      },
+      "motion_weighted": {
+        "label": "Abuse",
+        "confidence": 0.7410232424736023,
+        "correct": false
+      },
+      "changed": false,
+      "change_direction": "neutral"
+    },
+    {
+      "clip": "Arson001_x264.mp4",
+      "ground_truth": "Arson",
+      "uniform": {
+        "label": "Vandalism",
+        "confidence": 0.4451968323971544,
+        "correct": false
+      },
+      "motion_weighted": {
+        "label": "Vandalism",
+        "confidence": 0.34225353598594666,
+        "correct": false
+      },
+      "changed": false,
+      "change_direction": "neutral"
+    },
+    {
+      "clip": "Arson002_x264.mp4",
+      "ground_truth": "Arson",
+      "uniform": {
+        "label": "Arson",
+        "confidence": 0.37323343475194026,
+        "correct": true
+      },
+      "motion_weighted": {
+        "label": "Abuse",
+        "confidence": 0.33639800548553467,
+        "correct": false
+      },
+      "changed": true,
+      "change_direction": "away"
+    },
+    {
+      "clip": "Assault001_x264.mp4",
+      "ground_truth": "Assault",
+      "uniform": {
+        "label": "Explosion",
+        "confidence": 0.5783795217672983,
+        "correct": false
+      },
+      "motion_weighted": {
+        "label": "Explosion",
+        "confidence": 0.8478929400444031,
+        "correct": false
+      },
+      "changed": false,
+      "change_direction": "neutral"
+    },
+    {
+      "clip": "Assault002_x264.mp4",
+      "ground_truth": "Assault",
+      "uniform": {
+        "label": "Abuse",
+        "confidence": 0.30824847353829277,
+        "correct": false
+      },
+      "motion_weighted": {
+        "label": "Abuse",
+        "confidence": 0.3120548129081726,
+        "correct": false
+      },
+      "changed": false,
+      "change_direction": "neutral"
+    }
+  ]
+}

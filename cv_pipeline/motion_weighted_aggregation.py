@@ -1,0 +1,444 @@
+"""Motion-weighted temporal aggregation for VideoMAE action recognition.
+
+Replaces uniform averaging of per-window predictions with motion-energy weighting.
+Evaluates on UCF-Crime labeled test set.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+from typing import Optional
+
+import cv2
+import numpy as np
+import torch
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from cv_pipeline.action import classify_clip, _load_model, LABELS
+
+MODEL_NAME = "OPear/videomae-large-finetuned-UCF-Crime"
+_NUM_FRAMES = 16
+
+# UCF-Crime class directories (matching LABELS order)
+UCF_CLASSES = [
+    "Abuse", "Arrest", "Arson", "Assault", "Burglary", "Explosion", "Fighting",
+    "Normal Videos", "Road Accidents", "Robbery", "Shooting", "Shoplifting",
+    "Stealing", "Vandalism",
+]
+
+
+def compute_motion_energy(video_path: str | Path,
+                          start_frame: int,
+                          num_frames: int = _NUM_FRAMES,
+                          skip: int = 1) -> float:
+    """Compute mean frame-difference magnitude for a window."""
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        cap.release()
+        return 0.0
+
+    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+    prev_gray = None
+    total_diff = 0.0
+    diff_count = 0
+    frames_read = 0
+    idx = start_frame
+
+    while frames_read < num_frames:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        if idx % skip == 0:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            gray = cv2.resize(gray, (224, 224))
+            if prev_gray is not None:
+                diff = cv2.absdiff(prev_gray, gray)
+                total_diff += np.mean(diff)
+                diff_count += 1
+            prev_gray = gray
+            frames_read += 1
+        idx += 1
+
+    cap.release()
+    return total_diff / diff_count if diff_count > 0 else 0.0
+
+
+def aggregate_uniform(predictions: list[dict]) -> dict:
+    """Uniform average of per-window probability distributions."""
+    if not predictions:
+        return {"label": "Unknown", "confidence": 0.0, "probabilities": {}}
+
+    n = len(predictions)
+    prob_sum = {label: 0.0 for label in LABELS}
+
+    for pred in predictions:
+        for label, prob in pred["probabilities"].items():
+            prob_sum[label] += prob
+
+    prob_avg = {label: prob_sum[label] / n for label in LABELS}
+    top_label = max(prob_avg, key=prob_avg.get)
+
+    return {
+        "label": top_label,
+        "confidence": prob_avg[top_label],
+        "probabilities": prob_avg,
+    }
+
+
+def aggregate_motion_weighted(predictions: list[dict],
+                              motion_energies: list[float]) -> dict:
+    """Weighted average by normalized motion energy."""
+    if not predictions:
+        return {"label": "Unknown", "confidence": 0.0, "probabilities": {}}
+
+    energies = np.array(motion_energies, dtype=np.float32)
+    if energies.sum() == 0:
+        return aggregate_uniform(predictions)
+
+    weights = energies / energies.sum()
+
+    prob_weighted = {label: 0.0 for label in LABELS}
+    for pred, w in zip(predictions, weights):
+        for label, prob in pred["probabilities"].items():
+            prob_weighted[label] += prob * w
+
+    top_label = max(prob_weighted, key=prob_weighted.get)
+
+    return {
+        "label": top_label,
+        "confidence": prob_weighted[top_label],
+        "probabilities": prob_weighted,
+    }
+
+
+def analyze_clip(
+    video_path: str | Path,
+    model,
+    device,
+    window_frames: int = _NUM_FRAMES,
+    stride: int = 30,
+    motion_skip: int = 1,
+    use_motion_weighting: bool = True,
+) -> dict:
+    """Run sliding window analysis and aggregate predictions."""
+    cap = cv2.VideoCapture(str(video_path))
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    cap.release()
+
+    predictions = []
+    motion_energies = []
+    timestamps = []
+
+    for start in range(0, total - window_frames + 1, stride):
+        t = start / fps
+        timestamps.append(t)
+
+        pred = classify_clip(
+            video_path,
+            start_frame=start,
+            num_frames=window_frames,
+            model=model,
+            device=device,
+        )
+        predictions.append(pred)
+
+        energy = compute_motion_energy(video_path, start, window_frames, motion_skip)
+        motion_energies.append(energy)
+
+    if use_motion_weighting:
+        agg = aggregate_motion_weighted(predictions, motion_energies)
+    else:
+        agg = aggregate_uniform(predictions)
+
+    return {
+        "clip": Path(video_path).name,
+        "windows": len(predictions),
+        "duration": total / fps,
+        "aggregation": agg,
+        "per_window": [
+            {"time": t, "label": p["label"], "conf": p["confidence"], "motion": m}
+            for t, p, m in zip(timestamps, predictions, motion_energies)
+        ],
+    }
+
+
+def discover_test_clips(test_root: Path) -> list[tuple[Path, str]]:
+    """Discover all labeled clips in UCF-Crime directory structure.
+
+    Handles both flat (class_dirs directly under test_root) and nested
+    (test_root/class_dir/class_dir) structures.
+
+    Returns list of (clip_path, ground_truth_label).
+    """
+    clips = []
+
+    # First check for direct class subdirs
+    class_dirs = [d for d in test_root.iterdir() if d.is_dir() and d.name in UCF_CLASSES]
+
+    # If none found, check one level deeper (nested structure)
+    if not class_dirs:
+        for subdir in test_root.iterdir():
+            if not subdir.is_dir():
+                continue
+            for class_dir in subdir.iterdir():
+                if class_dir.is_dir() and class_dir.name in UCF_CLASSES:
+                    class_dirs.append(class_dir)
+
+    for class_dir in class_dirs:
+        class_name = class_dir.name
+        for vid in class_dir.glob("*.mp4"):
+            clips.append((vid, class_name))
+
+    clips.sort(key=lambda x: (x[1], x[0].name))
+    return clips
+
+
+def evaluate_test_set(
+    test_root: Path,
+    model,
+    device,
+    window_frames: int = _NUM_FRAMES,
+    stride: int = 30,
+    motion_skip: int = 1,
+    max_clips_per_class: Optional[int] = None,
+) -> dict:
+    """Evaluate both methods on the full labeled test set."""
+    clips = discover_test_clips(test_root)
+    if not clips:
+        raise ValueError(f"No clips found in {test_root}")
+
+    # Optionally limit clips per class
+    if max_clips_per_class:
+        from collections import defaultdict
+        by_class = defaultdict(list)
+        for clip, label in clips:
+            by_class[label].append(clip)
+        clips = []
+        for label, vids in by_class.items():
+            clips.extend((v, label) for v in vids[:max_clips_per_class])
+
+    print(f"Found {len(clips)} clips across {len(set(l for _, l in clips))} classes")
+    print(f"Evaluating with stride={stride}, window={window_frames}...")
+
+    results = []
+    uniform_correct = 0
+    weighted_correct = 0
+    changed = 0
+    changed_toward = 0
+    changed_away = 0
+
+    for i, (clip_path, gt_label) in enumerate(clips, 1):
+        print(f"\n[{i}/{len(clips)}] {clip_path.name}  (GT: {gt_label})")
+
+        uniform = analyze_clip(clip_path, model, device,
+                              window_frames, stride, motion_skip, False)
+        weighted = analyze_clip(clip_path, model, device,
+                               window_frames, stride, motion_skip, True)
+
+        u_label = uniform["aggregation"]["label"]
+        w_label = weighted["aggregation"]["label"]
+
+        u_correct = (u_label == gt_label)
+        w_correct = (w_label == gt_label)
+
+        if u_correct:
+            uniform_correct += 1
+        if w_correct:
+            weighted_correct += 1
+
+        pred_changed = (u_label != w_label)
+        if pred_changed:
+            changed += 1
+            # Check direction of change
+            if w_correct and not u_correct:
+                changed_toward += 1
+            elif u_correct and not w_correct:
+                changed_away += 1
+
+        results.append({
+            "clip": clip_path.name,
+            "ground_truth": gt_label,
+            "uniform": {"label": u_label, "confidence": uniform["aggregation"]["confidence"], "correct": u_correct},
+            "motion_weighted": {"label": w_label, "confidence": weighted["aggregation"]["confidence"], "correct": w_correct},
+            "changed": pred_changed,
+            "change_direction": "toward" if (w_correct and not u_correct) else ("away" if (u_correct and not w_correct) else "neutral"),
+        })
+
+        print(f"  Uniform:     {u_label:<18} {uniform['aggregation']['confidence']:.3f}  {'OK' if u_correct else 'NO'}")
+        print(f"  Motion-wt:   {w_label:<18} {weighted['aggregation']['confidence']:.3f}  {'OK' if w_correct else 'NO'}")
+        if pred_changed:
+            direction = "-> CORRECT" if w_correct else ("-> WRONG" if u_correct else "-> neutral")
+            print(f"  CHANGED: {u_label} -> {w_label}  ({direction})")
+
+    n = len(clips)
+    return {
+        "total_clips": n,
+        "uniform_accuracy": uniform_correct / n,
+        "motion_weighted_accuracy": weighted_correct / n,
+        "uniform_correct": uniform_correct,
+        "motion_weighted_correct": weighted_correct,
+        "predictions_changed": changed,
+        "changed_toward_correct": changed_toward,
+        "changed_away_from_correct": changed_away,
+        "per_clip": results,
+    }
+
+
+def print_summary_table(eval_results: dict):
+    """Print evaluation summary."""
+    print("\n" + "=" * 70)
+    print("EVALUATION SUMMARY")
+    print("=" * 70)
+    print(f"Total clips evaluated:     {eval_results['total_clips']}")
+    print(f"Uniform accuracy:          {eval_results['uniform_accuracy']:.2%}  ({eval_results['uniform_correct']}/{eval_results['total_clips']})")
+    print(f"Motion-weighted accuracy:  {eval_results['motion_weighted_accuracy']:.2%}  ({eval_results['motion_weighted_correct']}/{eval_results['total_clips']})")
+    print(f"Predictions changed:       {eval_results['predictions_changed']}")
+    print(f"  Changed toward correct:  {eval_results['changed_toward_correct']}")
+    print(f"  Changed away from correct: {eval_results['changed_away_from_correct']}")
+    print("=" * 70)
+
+    # Per-class breakdown
+    print("\nPer-class accuracy:")
+    print(f"{'Class':<20} {'GT':>4} {'Uniform':>8} {'Motion-wt':>10} {'Delta'}")
+    print("-" * 55)
+    from collections import defaultdict
+    class_stats = defaultdict(lambda: {"total": 0, "u_correct": 0, "w_correct": 0})
+    for r in eval_results["per_clip"]:
+        gt = r["ground_truth"]
+        class_stats[gt]["total"] += 1
+        if r["uniform"]["correct"]:
+            class_stats[gt]["u_correct"] += 1
+        if r["motion_weighted"]["correct"]:
+            class_stats[gt]["w_correct"] += 1
+
+    for cls in UCF_CLASSES:
+        if cls in class_stats:
+            s = class_stats[cls]
+            u_acc = s["u_correct"] / s["total"] if s["total"] else 0
+            w_acc = s["w_correct"] / s["total"] if s["total"] else 0
+            delta = w_acc - u_acc
+            print(f"{cls:<20} {s['total']:>4}  {u_acc:>7.1%}   {w_acc:>8.1%}   {delta:+.1%}")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Compare uniform vs motion-weighted action aggregation on UCF-Crime test set."
+    )
+    parser.add_argument(
+        "test_root", nargs="?", default="cv_pipeline/test_clips/Anomaly-Videos-Part-1",
+        help="Root directory of UCF-Crime test set (class subdirs with .mp4 files)"
+    )
+    parser.add_argument(
+        "--stride", type=int, default=60,
+        help="Window stride in frames (default: 60)"
+    )
+    parser.add_argument(
+        "--window", type=int, default=16,
+        help="Window size in frames (default: 16)"
+    )
+    parser.add_argument(
+        "--motion-skip", type=int, default=1,
+        help="Frame skip for motion energy computation (default: 1)"
+    )
+    parser.add_argument(
+        "--max-per-class", type=int, default=None,
+        help="Limit clips per class for quick testing (default: all)"
+    )
+    parser.add_argument(
+        "--output", type=Path, default=Path("cv_pipeline/mwca_evaluation_results.json"),
+        help="Output JSON path for results"
+    )
+    parser.add_argument(
+        "--baseline", action="store_true",
+        help="Run ONLY uniform baseline on specified clips (original mode)"
+    )
+    parser.add_argument(
+        "--clips", nargs="+",
+        help="Specific clip paths (original single-clip mode)"
+    )
+
+    args = parser.parse_args()
+
+    # Original single-clip mode
+    if args.clips:
+        clips = [Path(c) for c in args.clips]
+        for clip in clips:
+            if not clip.exists():
+                print(f"ERROR: clip not found: {clip}")
+                sys.exit(1)
+
+        print(f"Loading model: {MODEL_NAME} ...")
+        model, device = _load_model()
+        print(f"Device: {device}\n")
+
+        for clip in clips:
+            uniform_result = analyze_clip(
+                clip, model, device,
+                window_frames=args.window,
+                stride=args.stride,
+                use_motion_weighting=False,
+            )
+
+            if args.baseline:
+                agg = uniform_result["aggregation"]
+                top3 = sorted(agg["probabilities"].items(), key=lambda x: -x[1])[:3]
+                print(f"=== BASELINE (uniform) for {clip.name} ===")
+                print(f"Top-1: {agg['label']} ({agg['confidence']:.3f})")
+                print(f"Top-3: {', '.join(f'{l} {p:.2f}' for l,p in top3)}")
+                continue
+
+            weighted_result = analyze_clip(
+                clip, model, device,
+                window_frames=args.window,
+                stride=args.stride,
+                use_motion_weighting=True,
+            )
+
+            u = uniform_result["aggregation"]
+            w = weighted_result["aggregation"]
+            print(f"\n{'='*80}")
+            print(f"CLIP: {clip.name}  |  Windows: {uniform_result['windows']}  |  Duration: {uniform_result['duration']:.1f}s")
+            print(f"{'='*80}")
+            print(f"{'Method':<18} {'Top-1':<18} {'Confidence':>10}  {'Top-3'}")
+            print(f"{'-'*80}")
+            for method, agg in [("Uniform", u), ("Motion-weighted", w)]:
+                top3 = sorted(agg["probabilities"].items(), key=lambda x: -x[1])[:3]
+                print(f"{method:<18} {agg['label']:<18} {agg['confidence']:>10.3f}  {', '.join(f'{l[:12]} {p:.2f}' for l,p in top3)}")
+        sys.exit(0)
+
+    # Full test set evaluation mode
+    test_root = Path(args.test_root)
+    if not test_root.exists():
+        print(f"ERROR: test root not found: {test_root}")
+        sys.exit(1)
+
+    print(f"Loading model: {MODEL_NAME} ...")
+    model, device = _load_model()
+    print(f"Device: {device}\n")
+
+    eval_results = evaluate_test_set(
+        test_root, model, device,
+        window_frames=args.window,
+        stride=args.stride,
+        motion_skip=args.motion_skip,
+        max_clips_per_class=args.max_per_class,
+    )
+
+    print_summary_table(eval_results)
+
+    # Save results (convert numpy types)
+    def convert(obj):
+        if isinstance(obj, (np.floating, np.integer)):
+            return obj.item()
+        if isinstance(obj, dict):
+            return {k: convert(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [convert(v) for v in obj]
+        return obj
+
+    args.output.write_text(json.dumps(convert(eval_results), indent=2))
+    print(f"\nResults saved to: {args.output}")

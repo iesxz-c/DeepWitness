@@ -44,7 +44,7 @@ import torch
 from transformers import VideoMAEForVideoClassification
 
 # ---------------------------------------------------------------------------
-# Class labels (index → name)
+# Class labels (index -> name)
 # ---------------------------------------------------------------------------
 LABELS: list[str] = [
     "Abuse",

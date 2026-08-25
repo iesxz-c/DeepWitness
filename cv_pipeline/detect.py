@@ -25,6 +25,8 @@ from pathlib import Path
 import cv2
 from ultralytics import YOLO
 
+from cv_pipeline.calibrate import load_calibrated_thresholds, DEFAULT_CALIBRATION_PATH
+
 WEIGHTS_DIR = Path(__file__).resolve().parent / "weights"
 WEAPON_WEIGHTS = WEIGHTS_DIR / "weapon_detect_v1_best.pt"
 KNIFE_WEIGHTS = WEIGHTS_DIR / "knife_detect_v2_best.pt"
@@ -52,8 +54,11 @@ KNIFE_MODEL_TAG = "knife_v2"
 COCO_MODEL_TAG = "coco_general"
 
 DEFAULT_SKIP = 5
-DEFAULT_CONF_WEAPON = 0.5
-DEFAULT_CONF_KNIFE = 0.7
+
+# Load calibrated thresholds (fallback to hardcoded defaults if file missing)
+_CAL = load_calibrated_thresholds(DEFAULT_CALIBRATION_PATH)
+DEFAULT_CONF_WEAPON = _CAL.get("weapon_v1", 0.5)
+DEFAULT_CONF_KNIFE = _CAL.get("knife_v2", 0.65)
 DEFAULT_CONF_COCO = 0.5
 
 
@@ -147,7 +152,20 @@ if __name__ == "__main__":
                         help=f"Knife model confidence threshold (default: {DEFAULT_CONF_KNIFE})")
     parser.add_argument("--conf-person", type=float, default=DEFAULT_CONF_COCO,
                         help=f"COCO general model confidence threshold (default: {DEFAULT_CONF_COCO})")
+    parser.add_argument("--recalibrate", action="store_true",
+                        help="Re-run calibration on default negative clip (sample.mp4) before detecting")
     args = parser.parse_args()
+
+    if args.recalibrate:
+        from cv_pipeline.calibrate import calibrate_all, DEFAULT_CALIBRATION_PATH
+        neg_clip = Path(__file__).resolve().parent / "test_clips" / "sample.mp4"
+        if neg_clip.exists():
+            print(f"Re-calibrating on {neg_clip}...")
+            calibrate_all([neg_clip], output_path=DEFAULT_CALIBRATION_PATH)
+            # Reload thresholds after calibration
+            _CAL = load_calibrated_thresholds(DEFAULT_CALIBRATION_PATH)
+            args.conf_weapon = _CAL.get("weapon_v1", args.conf_weapon)
+            args.conf_knife = _CAL.get("knife_v2", args.conf_knife)
 
     video_path = Path(args.video)
     if not video_path.exists():
