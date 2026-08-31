@@ -195,7 +195,7 @@ def discover_test_clips(test_root: Path) -> list[tuple[Path, str]]:
             canonical = _resolve_class_name(child.name)
             if canonical and canonical not in seen_classes:
                 seen_classes.add(canonical)
-                for vid in child.glob("*.mp4"):
+                for vid in child.glob("**/*.mp4"):
                     clips.append((vid, canonical))
             else:
                 _scan(depth + 1, child)
