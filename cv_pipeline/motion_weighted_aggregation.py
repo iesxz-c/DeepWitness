@@ -205,11 +205,17 @@ def evaluate_test_set(
     stride: int = 30,
     motion_skip: int = 1,
     max_clips_per_class: Optional[int] = None,
+    class_filter: Optional[list[str]] = None,
 ) -> dict:
     """Evaluate both methods on the full labeled test set."""
     clips = discover_test_clips(test_root)
     if not clips:
         raise ValueError(f"No clips found in {test_root}")
+
+    if class_filter:
+        clips = [(c, l) for c, l in clips if l in class_filter]
+        if not clips:
+            raise ValueError(f"No clips found for classes: {class_filter}")
 
     # Optionally limit clips per class
     if max_clips_per_class:
@@ -458,6 +464,10 @@ if __name__ == "__main__":
         help="Limit clips per class for quick testing (default: all)"
     )
     parser.add_argument(
+        "--classes", nargs="+",
+        help="Only evaluate these UCF-Crime classes, e.g. --classes Burglary Fighting Vandalism"
+    )
+    parser.add_argument(
         "--output", type=Path, default=Path("cv_pipeline/mwca_evaluation_results.json"),
         help="Output JSON path for results"
     )
@@ -560,6 +570,7 @@ if __name__ == "__main__":
         stride=args.stride,
         motion_skip=args.motion_skip,
         max_clips_per_class=args.max_per_class,
+        class_filter=args.classes,
     )
 
     print_summary_table(eval_results)
