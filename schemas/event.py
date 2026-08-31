@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field
 import re
+from typing import Optional
 
 
 class Event(BaseModel):
@@ -8,6 +9,7 @@ class Event(BaseModel):
     event_type: str
     description: str
     confidence: float = Field(..., ge=0.0, le=1.0)
+    case_id: Optional[str] = Field(default=None, description="Investigation case this event belongs to")
 
 
 if __name__ == "__main__":
