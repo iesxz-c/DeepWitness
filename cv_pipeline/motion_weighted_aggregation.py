@@ -28,6 +28,16 @@ UCF_CLASSES = [
     "Stealing", "Vandalism",
 ]
 
+DIRECTORY_NAME_MAP = {
+    "Normal_Videos_for_Event_Recognition": "Normal Videos",
+}
+
+
+def _resolve_class_name(dir_name: str) -> str | None:
+    if dir_name in UCF_CLASSES:
+        return dir_name
+    return DIRECTORY_NAME_MAP.get(dir_name)
+
 
 def compute_motion_energy(video_path: str | Path,
                           start_frame: int,
@@ -169,30 +179,28 @@ def analyze_clip(
 def discover_test_clips(test_root: Path) -> list[tuple[Path, str]]:
     """Discover all labeled clips in UCF-Crime directory structure.
 
-    Handles both flat (class_dirs directly under test_root) and nested
-    (test_root/class_dir/class_dir) structures.
+    Handles flat, nested (double-dir), and irregular naming via DIRECTORY_NAME_MAP.
 
     Returns list of (clip_path, ground_truth_label).
     """
-    clips = []
+    clips: list[tuple[Path, str]] = []
+    seen_classes: set[str] = set()
 
-    # First check for direct class subdirs
-    class_dirs = [d for d in test_root.iterdir() if d.is_dir() and d.name in UCF_CLASSES]
-
-    # If none found, check one level deeper (nested structure)
-    if not class_dirs:
-        for subdir in test_root.iterdir():
-            if not subdir.is_dir():
+    def _scan(depth: int, path: Path):
+        if depth > 3:
+            return
+        for child in path.iterdir():
+            if not child.is_dir():
                 continue
-            for class_dir in subdir.iterdir():
-                if class_dir.is_dir() and class_dir.name in UCF_CLASSES:
-                    class_dirs.append(class_dir)
+            canonical = _resolve_class_name(child.name)
+            if canonical and canonical not in seen_classes:
+                seen_classes.add(canonical)
+                for vid in child.glob("*.mp4"):
+                    clips.append((vid, canonical))
+            else:
+                _scan(depth + 1, child)
 
-    for class_dir in class_dirs:
-        class_name = class_dir.name
-        for vid in class_dir.glob("*.mp4"):
-            clips.append((vid, class_name))
-
+    _scan(0, test_root)
     clips.sort(key=lambda x: (x[1], x[0].name))
     return clips
 
