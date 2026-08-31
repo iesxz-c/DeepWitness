@@ -244,8 +244,16 @@ def evaluate_test_set(
     changed = 0
     changed_toward = 0
     changed_away = 0
+    # Normal footage tracking
+    normal_clips_total = 0
+    uniform_normal_fp = 0
+    weighted_normal_fp = 0
 
     for i, (clip_path, gt_label) in enumerate(clips, 1):
+        is_normal = (gt_label == "Normal Videos")
+        if is_normal:
+            normal_clips_total += 1
+
         print(f"\n[{i}/{len(clips)}] {clip_path.name}  (GT: {gt_label})")
 
         uniform = analyze_clip(clip_path, model, device,
@@ -256,8 +264,18 @@ def evaluate_test_set(
         u_label = uniform["aggregation"]["label"]
         w_label = weighted["aggregation"]["label"]
 
-        u_correct = (u_label == gt_label)
-        w_correct = (w_label == gt_label)
+        if is_normal:
+            u_correct = (u_label == "Normal Videos")
+            w_correct = (w_label == "Normal Videos")
+            u_fp = not u_correct
+            w_fp = not w_correct
+            if u_fp:
+                uniform_normal_fp += 1
+            if w_fp:
+                weighted_normal_fp += 1
+        else:
+            u_correct = (u_label == gt_label)
+            w_correct = (w_label == gt_label)
 
         if u_correct:
             uniform_correct += 1
@@ -267,7 +285,6 @@ def evaluate_test_set(
         pred_changed = (u_label != w_label)
         if pred_changed:
             changed += 1
-            # Check direction of change
             if w_correct and not u_correct:
                 changed_toward += 1
             elif u_correct and not w_correct:
@@ -282,13 +299,16 @@ def evaluate_test_set(
             "change_direction": "toward" if (w_correct and not u_correct) else ("away" if (u_correct and not w_correct) else "neutral"),
         })
 
-        print(f"  Uniform:     {u_label:<18} {uniform['aggregation']['confidence']:.3f}  {'OK' if u_correct else 'NO'}")
-        print(f"  Motion-wt:   {w_label:<18} {weighted['aggregation']['confidence']:.3f}  {'OK' if w_correct else 'NO'}")
+        tag = " [NORMAL]" if is_normal else ""
+        print(f"  Uniform:     {u_label:<18} {uniform['aggregation']['confidence']:.3f}  {'OK' if u_correct else ('FP' if is_normal else 'NO')}{tag}")
+        print(f"  Motion-wt:   {w_label:<18} {weighted['aggregation']['confidence']:.3f}  {'OK' if w_correct else ('FP' if is_normal else 'NO')}{tag}")
         if pred_changed:
             direction = "-> CORRECT" if w_correct else ("-> WRONG" if u_correct else "-> neutral")
             print(f"  CHANGED: {u_label} -> {w_label}  ({direction})")
 
     n = len(clips)
+    normal_fp_rate_u = uniform_normal_fp / normal_clips_total if normal_clips_total else None
+    normal_fp_rate_w = weighted_normal_fp / normal_clips_total if normal_clips_total else None
     return {
         "total_clips": n,
         "uniform_accuracy": uniform_correct / n,
@@ -298,6 +318,11 @@ def evaluate_test_set(
         "predictions_changed": changed,
         "changed_toward_correct": changed_toward,
         "changed_away_from_correct": changed_away,
+        "normal_clips_total": normal_clips_total,
+        "uniform_normal_false_positives": uniform_normal_fp,
+        "weighted_normal_false_positives": weighted_normal_fp,
+        "uniform_normal_false_positive_rate": normal_fp_rate_u,
+        "weighted_normal_false_positive_rate": normal_fp_rate_w,
         "per_clip": results,
     }
 
@@ -313,6 +338,16 @@ def print_summary_table(eval_results: dict):
     print(f"Predictions changed:       {eval_results['predictions_changed']}")
     print(f"  Changed toward correct:  {eval_results['changed_toward_correct']}")
     print(f"  Changed away from correct: {eval_results['changed_away_from_correct']}")
+
+    if eval_results.get("normal_clips_total", 0) > 0:
+        print("-" * 70)
+        print("NORMAL FOOTAGE FALSE POSITIVE RATE")
+        print(f"  Total normal clips:        {eval_results['normal_clips_total']}")
+        print(f"  Uniform FP rate:           {eval_results['uniform_normal_false_positive_rate']:.2%}  "
+              f"({eval_results['uniform_normal_false_positives']}/{eval_results['normal_clips_total']})")
+        print(f"  Motion-weighted FP rate:   {eval_results['weighted_normal_false_positive_rate']:.2%}  "
+              f"({eval_results['weighted_normal_false_positives']}/{eval_results['normal_clips_total']})")
+
     print("=" * 70)
 
     # Per-class breakdown
