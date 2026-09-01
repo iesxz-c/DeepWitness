@@ -48,3 +48,10 @@ backend/uploads/
 
 # Runtime data
 backend/events.db
+
+# Large test media (video/zip) - do not commit
+cv_pipeline/test_clips/*.mp4
+cv_pipeline/test_clips/*.zip
+cv_pipeline/test_clips/*.jpg
+cv_pipeline/test_clips/Anomaly-Videos-Part-1/
+cv_pipeline/test_clips/Normal_Videos_for_Event_Recognition/
