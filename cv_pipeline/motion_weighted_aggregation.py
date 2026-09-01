@@ -422,63 +422,87 @@ def visualize_clip(
     if not frames:
         raise ValueError("Could not extract frames")
 
-    # Build composite image
-    frame_h, frame_w = 240, 320  # resized frame size
-    pad = 10
-    info_h = 120  # height for annotations below each frame
-    n = len(frames)
-    composite_w = n * (frame_w + pad) + pad
-    composite_h = frame_h + info_h + 80  # 80px for header
-    composite = np.zeros((composite_h, composite_w, 3), dtype=np.uint8)
+    # Select a representative subset if there are many windows.
+    # Keep the top and bottom windows by motion energy so high-motion action
+    # windows and low-motion (e.g. title-card) windows are both represented.
+    MAX_FRAMES = 12
+    cols = 6  # frames per row (wrapping grid)
+    n_all = len(frames)
+    subset = frames
+    subset_note = f"showing all {n_all} of {n_all} windows"
+    if n_all > MAX_FRAMES:
+        top = sorted(frames, key=lambda fw: -fw[2])[: MAX_FRAMES // 2]  # highest motion energy
+        bottom = sorted(frames, key=lambda fw: fw[2])[: MAX_FRAMES // 2]  # lowest motion energy
+        sel = {f[3]: f for f in top + bottom}
+        subset = [sel[k] for k in sorted(sel)]
+        subset_note = f"showing {len(subset)} of {n_all} windows, selected by motion energy"
+
+    # Wrapping grid layout -> compact, near-square image (e.g. ~1600x1200)
+    frame_w, frame_h = 240, 160  # resized frame size (4:3 cell)
+    pad = 12
+    info_h = 86  # height for annotations below each frame
+    header_h = 96
+    total_w = cols * (frame_w + pad) + pad
+
+    rows = (len(subset) + cols - 1) // cols
+    content_h = rows * (frame_h + info_h + pad) + pad
+    footer_h = 44
+    composite_h = header_h + content_h + footer_h
+    composite = np.zeros((composite_h, total_w, 3), dtype=np.uint8)
     composite[:] = (30, 30, 35)  # dark background
 
     # Header
-    header = f"{Path(video_path).name}  |  {n} windows  |  stride={stride}  |  window={window_frames} frames"
-    cv2.putText(composite, header, (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
-    cv2.putText(composite, f"Model: {MODEL_NAME.split('/')[-1]}  |  Motion-weighted aggregation", (15, 50),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
+    clip_name = Path(video_path).name
+    cv2.putText(composite, f"{clip_name}", (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                (220, 220, 220), 1)
+    cv2.putText(composite, f"Model: {MODEL_NAME.split('/')[-1]}  |  Motion-weighted aggregation  |  "
+                f"stride={stride}  |  window={window_frames} frames",
+                (15, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (170, 170, 170), 1)
+    cv2.putText(composite, subset_note, (15, 74), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                (255, 190, 60), 1)
 
-    # Place frames and annotations
-    for i, (frame, w, weight, idx) in enumerate(frames):
-        x = pad + i * (frame_w + pad)
-        y = 70
+    # Place frames and annotations in a wrapping grid
+    for i, (frame, w, weight, idx) in enumerate(subset):
+        col = i % cols
+        row = i // cols
+        x = pad + col * (frame_w + pad)
+        y = header_h + row * (frame_h + info_h + pad) + pad
 
-        # Resize and place frame
         small = cv2.resize(frame, (frame_w, frame_h))
-        composite[y:y+frame_h, x:x+frame_w] = small
+        composite[y:y + frame_h, x:x + frame_w] = small
 
         # Window border color based on weight (green=high, red=low)
         border_color = (0, int(255 * weight), int(255 * (1 - weight)))
         cv2.rectangle(composite, (x, y), (x + frame_w, y + frame_h), border_color, 2)
 
         # Annotations below frame
-        ay = y + frame_h + 5
-        t_start = w["time"]
-        t_end = t_start + window_frames / (cap.get(cv2.CAP_PROP_FPS) if cap.isOpened() else fps)
-
+        ay = y + frame_h + 4
+        t_end = t_start = w["time"]
         lines = [
-            f"Window {idx+1}/{n}",
-            f"Time: {t_start:.1f}s - {t_end:.1f}s",
-            f"Motion: {w['motion']:.3f}  |  Weight: {weight:.3f}",
-            f"Pred: {w['label']} ({w['conf']:.2f})",
+            f"W{idx+1}/{n_all}  {t_start:.0f}s",
+            f"m={w['motion']:.3f}  wt={weight:.3f}",
+            f"pred: {w['label']} ({w['conf']:.2f})",
         ]
 
         for j, line in enumerate(lines):
-            color = (255, 255, 255) if j < 3 else (0, 255, 150)
-            cv2.putText(composite, line, (x + 5, ay + j * 22),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
+            color = (0, 255, 150) if j == 2 else (255, 255, 255)
+            cv2.putText(composite, line, (x + 5, ay + j * 18),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
 
     # Footer with aggregate prediction
     agg = result["aggregation"]
-    footer_y = composite_h - 30
-    cv2.putText(composite, f"AGGREGATE: {agg['label']}  ({agg['confidence']:.3f})  |  Top-3: "
-                f"{', '.join(f'{l[:10]} {p:.2f}' for l,p in sorted(agg['probabilities'].items(), key=lambda x: -x[1])[:3])}",
+    footer_y = composite_h - 26
+    cv2.putText(composite,
+                f"AGGREGATE: {agg['label']}  ({agg['confidence']:.3f})  |  Top-3: "
+                f"{', '.join(f'{l[:10]} {p:.2f}' for l, p in sorted(agg['probabilities'].items(), key=lambda x: -x[1])[:3])}",
                 (15, footer_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
 
     # Save
     if output_path is None:
         output_path = Path(video_path).with_stem(f"{Path(video_path).stem}_window_breakdown").with_suffix(".jpg")
     cv2.imwrite(str(output_path), composite)
+    print(f"Saved: {output_path}  ({composite.shape[1]}x{composite.shape[0]}px, "
+          f"showing {len(subset)}/{n_all} windows)")
     return output_path
 
 
